@@ -4,26 +4,17 @@
 
 .PHONY: default
 
-CXX = g++
+CXX = g++ -I../src/hal/linux
 
 OBJS = \
 	Adafruit_BME280.o \
 	Adafruit_LTR329_LTR303.o \
 	Adafruit_MCP23X17.o \
-	Adafruit_RA8875.o \
-	Arduino.o \
 	CourierPrimeSans6.o \
 	DateStrings.o \
-	EEPROM.o \
-	ESP.o \
-	ESP8266WiFi.o \
 	ESP8266httpUpdate.o \
-	Serial.o \
         SPI.o \
 	Time.o \
-	WiFiClient.o \
-	WiFiServer.o \
-	WiFiUdp.o \
         Wire.o \
 	i2cdriver.o \
 	passwords.o

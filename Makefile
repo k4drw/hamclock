@@ -13,7 +13,7 @@
 .PHONY: clean clobber help hclibs
 
 # build flags common to all options and architectures
-CXXFLAGS = -IArduinoLib -IwsServer/include -Izlib-hc -I. -g -O2 -Wall -pthread -std=c++17
+CXXFLAGS = -Isrc/hal/linux -IArduinoLib -IwsServer/include -Izlib-hc -I. -g -O2 -Wall -pthread -std=c++17
 # CXXFLAGS += -Wextra -pedantic -Werror -Wno-attributes -Wno-unknown-pragmas
 
 # add explicit framebuffer depth as _FB_DEPTH if defined
@@ -60,6 +60,9 @@ ifeq ($(shell find /usr/lib -name libgpiod.a | wc -l), 1)
     LIBS += -lgpiod
 endif
 
+# Link with libcurl
+LIBS += -lcurl
+
 
 # make CXXFLAGS available to sub makes
 export CXXFLAGS
@@ -68,6 +71,16 @@ export CXXFLAGS
 OBJS = \
 	BME280.o \
 	ESPHamClock.o \
+src/hal/linux/Adafruit_RA8875.o \
+src/hal/linux/System.o \
+src/hal/linux/ESP.o \
+src/hal/linux/Serial.o \
+src/hal/linux/EEPROM.o \
+src/hal/linux/ESP8266WiFi.o \
+src/hal/linux/WiFiClient.o \
+src/hal/linux/WiFiUdp.o \
+src/hal/linux/WiFiServer.o \
+    main.o \
 	Germano-Bold-16.o \
 	Germano-Bold-30.o \
 	Germano-Regular-16.o \
@@ -288,7 +301,10 @@ install:
 	    mkdir -p $$DIR \
 	    && mv -f $$SOURCE $$TARGET \
 	    && chown root $$TARGET \
-	    && chmod u+s $$TARGET; \
+	    && chmod u+s $$TARGET \
+	    && mkdir -p /usr/local/share/hamclock \
+	    && cp -f data/cities2.txt /usr/local/share/hamclock/ \
+	    && chmod 644 /usr/local/share/hamclock/cities2.txt; \
 	fi
 
 clean clobber:
@@ -296,4 +312,8 @@ clean clobber:
 	$(MAKE) -C wsServer clean
 	$(MAKE) -C zlib-hc clean
 	touch x.o x.dSYM hamclock hamclock-
-	rm -rf *.o *.dSYM hamclock hamclock-*
+	touch x.o x.dSYM hamclock hamclock-
+	rm -rf *.o src/hal/linux/*.o *.dSYM hamclock hamclock-*[0-9]x[0-9]* hamclock-fb* hamclock-web*
+
+src/hal/linux/%.o: src/hal/linux/%.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<

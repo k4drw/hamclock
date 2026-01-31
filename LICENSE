@@ -1,6 +1,7 @@
 MIT License
 
 Copyright (c) 2020-2025 Elwood Charles Downey
+Copyright (c) 2026-present HamClock Community Maintainers
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -20,9 +21,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Note well "THE SOFTWARE" refers only to what is running on the client side. It
-does not include the backend services, without which HamClock is nearly useless.
-Backend services costs me real money but I provide it free of charge for the
-benefit of the amateur radio community. Users who build HamClock for their own
-personal use are welcome but if you make money from HamClock, please contact
-me before proceeding to discuss terms at ecdowney@clearskyinstitute.com.
+--------------------------------------------------------------------------------
+MAINTENANCE NOTE:
+This version of HamClock has been modified to operate independently of the legacy
+backend services provided by the original author. It connects directly to public
+data sources (NOAA, Open-Meteo, etc.) and uses local resources to ensure
+continued operation.
+--------------------------------------------------------------------------------

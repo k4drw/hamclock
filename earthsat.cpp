@@ -73,7 +73,7 @@ typedef enum {
 // files
 static const char esat_ufn[] = "user-esats.txt";        // name of user's tle file
 static const char esat_sfn[] = "esats.txt";             // local cached file from server
-static const char esat_url[] = "/esats/esats.txt";      // server file URL
+static const char esat_url[] = "https://celestrak.org/NORAD/elements/gp.php?GROUP=amateur&FORMAT=tle";      // server file URL
 #define MAX_CACHE_AGE   10000                           // max cache age, seconds
 
 // used by readNextSat()

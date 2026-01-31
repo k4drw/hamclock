@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: update-cities
+        name: Update City Database
+        entry: scripts/git-hooks/pre-commit
+        language: script
+        pass_filenames: false
+        description: "Checks if data/cities2.txt is older than 30 days and updates it if so."

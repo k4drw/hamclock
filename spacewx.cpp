@@ -3,6 +3,8 @@
 
 
 #include "HamClock.h"
+#include <ArduinoJson.h>
+#include <sys/stat.h>
 
 
 // retrieve pages
@@ -356,67 +358,69 @@ bool retrieveSunSpots (SunSpotData &ssn)
         return (true);
     }
 
-    // get fresh
-    char line[100];
-    WiFiClient ss_client;
+    const char *url = "https://services.swpc.noaa.gov/text/daily-solar-indices.txt";
+    const char *tmp_fn = "/tmp/hc_ssn.txt";
     bool ok = false;
 
     // mark value as bad until proven otherwise
     space_wx[SPCWX_SSN].value_ok = false;
     ssn.data_ok = ssn_cache.data_ok = false;
 
-    Serial.println(ssn_page);
-    if (ss_client.connect(backend_host, backend_port)) {
+    Serial.printf("SSN: %s\n", url);
+    if (curlDownload(url, tmp_fn)) {
         updateClocks(false);
-
-        // query web page
-        httpHCGET (ss_client, backend_host, ssn_page);
-
-        // skip response header
-        if (!httpSkipHeader (ss_client)) {
-            Serial.print ("SSN: header fail\n");
-            goto out;
+        FILE *fp = fopen(tmp_fn, "r");
+        if (fp) {
+            char line[200];
+            float vals[SSN_NV];
+            int n_vals = 0;
+            
+            while (fgets(line, sizeof(line), fp)) {
+                // Skip headers and comments
+                if (line[0] == '#' || line[0] == ':' || strlen(line) < 10) continue;
+                
+                int y, m, d, flux, ssn_val;
+                // Parse: Y M D Flux SSN ...
+                if (sscanf(line, "%d %d %d %d %d", &y, &m, &d, &flux, &ssn_val) == 5) {
+                    if (n_vals < SSN_NV) {
+                        vals[n_vals++] = (float)ssn_val;
+                    } else {
+                        // shift left to keep newest at end
+                        for(int k=0; k<SSN_NV-1; k++) vals[k] = vals[k+1];
+                        vals[SSN_NV-1] = (float)ssn_val;
+                    }
+                }
+            }
+            fclose(fp);
+            
+            if (n_vals > 0) {
+                // Calculate offset. 
+                // We want SSN_NV points. Array ends at "Today".
+                // ssn_cache.x[i] = 1-SSN_NV + i;
+                
+                int offset = SSN_NV - n_vals; 
+                for (int i=0; i<SSN_NV; i++) {
+                     ssn_cache.x[i] = 1-SSN_NV + i;
+                     
+                     int src_i = i - offset;
+                     if (src_i < 0) ssn_cache.ssn[i] = vals[0]; // dupe oldest
+                     else ssn_cache.ssn[i] = vals[src_i];
+                }
+                
+                space_wx[SPCWX_SSN].value = ssn_cache.ssn[SSN_NV-1];
+                space_wx[SPCWX_SSN].value_ok = true;
+                ssn_cache.data_ok = true;
+                ssn = ssn_cache;
+                ok = true;
+                Serial.printf("SSN: Last %.0f (count %d)\n", ssn_cache.ssn[SSN_NV-1], n_vals);
+            }
         }
-
-        // transaction successful
-        ok = true;
-
-        // read lines into ssn array and build corresponding time value
-        int8_t ssn_i;
-        for (ssn_i = 0; ssn_i < SSN_NV && getTCPLine (ss_client, line, sizeof(line), NULL); ssn_i++) {
-            ssn_cache.x[ssn_i] = 1-SSN_NV + ssn_i;
-            ssn_cache.ssn[ssn_i] = atof(line+11);
-        }
-
-        updateClocks(false);
-
-        // ok if all received
-        if (ssn_i == SSN_NV) {
-
-            // capture latest
-            space_wx[SPCWX_SSN].value = ssn_cache.ssn[SSN_NV-1];
-            space_wx[SPCWX_SSN].value_ok = true;
-            ssn_cache.data_ok = true;
-            ssn = ssn_cache;
-
-        } else {
-
-            Serial.printf ("SSN: data short %d / %d\n", ssn_i, SSN_NV);
-        }
-
     } else {
-
-        Serial.print ("SSN: connection failed\n");
+        Serial.printf ("SSN: Download failed\n");
     }
-
-out:
 
     // set next update
     ssn_cache.next_update = ok ? nextRetrieval (PLOT_CH_SSN, SSN_INTERVAL) : nextWiFiRetry(PLOT_CH_SSN);
-
-    // clean up
-    updateClocks(false);
-    ss_client.stop();
     return (ok);
 }
 
@@ -435,6 +439,10 @@ static bool checkForNewSunSpots (void)
 /* retrieve solar flux and SPCWX_FLUX if it's time, else use cache.
  * return whether transaction was ok (even if data was not)
  */
+/* retrieve solar flux and SPCWX_FLUX if it's time, else use cache.
+ * return whether transaction was ok (even if data was not)
+ * Uses NOAA SWPC JSON (HTTPS via wget)
+ */
 bool retrieveSolarFlux (SolarFluxData &sf)
 {
     // check cache first
@@ -443,67 +451,88 @@ bool retrieveSolarFlux (SolarFluxData &sf)
         return (true);
     }
 
-    // get fresh
-    char line[120];
-    WiFiClient sf_client;
+    const char *url = "https://services.swpc.noaa.gov/products/10cm-flux-30-day.json";
+    const char *tmp_fn = "/tmp/hc_sfi.json";
     bool ok = false;
 
     // mark value as bad until proven otherwise
     space_wx[SPCWX_FLUX].value_ok = false;
     sf.data_ok = sf_cache.data_ok = false;
 
-    Serial.println (sf_page);
-    if (sf_client.connect(backend_host, backend_port)) {
+    Serial.printf ("SFlux: %s\n", url);
+
+    // Download
+    if (curlDownload(url, tmp_fn)) {
+        
         updateClocks(false);
-
-        // query web page
-        httpHCGET (sf_client, backend_host, sf_page);
-
-        // skip response header
-        if (!httpSkipHeader (sf_client)) {
-            Serial.print ("SFlux: header fail\n");
-            goto out;
+        
+        FILE *fp = fopen(tmp_fn, "r");
+        if (fp) {
+            fseek(fp, 0, SEEK_END);
+            long fsize = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+            
+            char *json_buf = (char*) malloc(fsize + 1);
+            if (json_buf) {
+                fread(json_buf, 1, fsize, fp);
+                json_buf[fsize] = 0;
+                
+                StaticJsonDocument<8192> doc; // NOAA 30-day is small, but just in case
+                DeserializationError error = deserializeJson(doc, json_buf);
+                
+                if (!error && doc.is<JsonArray>()) {
+                    JsonArray arr = doc.as<JsonArray>();
+                    int noaa_count = arr.size(); 
+                    
+                    // Reset cache x values (same formula as original)
+                    for(int i=0; i<SFLUX_NV; i++) {
+                        sf_cache.x[i] = (i - (SFLUX_NV-9-1))/3.0F; 
+                        sf_cache.sflux[i] = 0;
+                    }
+                    
+                    // NOAA data is TimeStr, Value. Oldest first.
+                    // We fill backwards from "Now" (Index 89 in SFLUX_NV=99)
+                    int cache_i = SFLUX_NV - 10; 
+                    
+                    // Iterate backwards through NOAA data (Newest first)
+                    // Skip n=0 (header)
+                    for (int n = noaa_count - 1; n >= 1 && cache_i >= 0; n--) {
+                        JsonArray row = arr[n];
+                        float flux = row[1].as<float>();
+                        
+                        // Fill 3 slots for this day 
+                        for (int k=0; k<3 && cache_i >= 0; k++) {
+                            sf_cache.sflux[cache_i--] = flux;
+                        }
+                    }
+                    
+                    // Forward fill predictions from last known value
+                    float last_val = sf_cache.sflux[SFLUX_NV-10];
+                    for (int i = SFLUX_NV-9; i < SFLUX_NV; i++) {
+                        sf_cache.sflux[i] = last_val;
+                    }
+                    
+                    // Success
+                    space_wx[SPCWX_FLUX].value = last_val;
+                    space_wx[SPCWX_FLUX].value_ok = true;
+                    sf_cache.data_ok = true;
+                    sf = sf_cache;
+                    ok = true;
+                    
+                    Serial.printf("SFlux: Last val %.0f\n", last_val);
+                } else {
+                    Serial.printf("SFlux: JSON Error %s\n", error.c_str());
+                }
+                free(json_buf);
+            }
+            fclose(fp);
         }
-
-        // transaction successful
-        ok = true;
-
-        // read lines into flux array and build corresponding time value
-        int8_t sf_i;
-        for (sf_i = 0; sf_i < SFLUX_NV && getTCPLine (sf_client, line, sizeof(line), NULL); sf_i++) {
-            sf_cache.x[sf_i] = (sf_i - (SFLUX_NV-9-1))/3.0F; // 3x(30 days history + 3 days predictions)
-            sf_cache.sflux[sf_i] = atof(line);
-        }
-
-        updateClocks(false);
-
-        // ok if found all
-        if (sf_i == SFLUX_NV) {
-
-            // capture current value (not predictions)
-            space_wx[SPCWX_FLUX].value = sf_cache.sflux[SFLUX_NV-10];
-            space_wx[SPCWX_FLUX].value_ok = true;
-            sf_cache.data_ok = true;
-            sf = sf_cache;
-
-        } else {
-
-            Serial.printf ("SFlux: data short: %d / %d\n", sf_i, SFLUX_NV);
-        }
-
     } else {
-
-        Serial.print ("SFlux: connection failed\n");
+        Serial.printf ("SFlux: Download failed\n");
     }
-
-out:
 
     // set next update
     sf_cache.next_update = ok ? nextRetrieval (PLOT_CH_FLUX, SFLUX_INTERVAL) : nextWiFiRetry (PLOT_CH_FLUX);
-
-    // clean up
-    updateClocks(false);
-    sf_client.stop();
     return (ok);
 }
 
@@ -675,67 +704,71 @@ bool retrieveKp (KpData &kp)
         return (true);
     }
 
-    // get fresh
-    WiFiClient kp_client;                               // wifi client connection
-    int kp_i = 0;                                       // next kp index to use
-    char line[100];                                     // text line
-    bool ok = false;                                    // set if no network errors
-
-    // mark value as bad until proven otherwise
+    const char *url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json";
+    const char *tmp_fn = "/tmp/hc_kp.json";
+    bool ok = false;
+    
+    // reset status
     space_wx[SPCWX_KP].value_ok = false;
     kp.data_ok = kp_cache.data_ok = false;
-
-    Serial.println(kp_page);
-    if (kp_client.connect(backend_host, backend_port)) {
+    
+    Serial.printf("Kp: %s\n", url);
+    
+    if (curlDownload(url, tmp_fn)) {
         updateClocks(false);
-
-        // query web page
-        httpHCGET (kp_client, backend_host, kp_page);
-
-        // skip response header
-        if (!httpSkipHeader (kp_client)) {
-            Serial.print ("Kp: header short\n");
-            goto out;
+        FILE *fp = fopen(tmp_fn, "r");
+        if (fp) {
+            fseek(fp, 0, SEEK_END);
+            long fsize = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+            char *buf = (char*)malloc(fsize+1);
+            if (buf) {
+                fread(buf, 1, fsize, fp);
+                buf[fsize] = 0;
+                
+                StaticJsonDocument<20000> doc; 
+                DeserializationError err = deserializeJson(doc, buf);
+                if (!err && doc.is<JsonArray>()) {
+                    JsonArray arr = doc.as<JsonArray>();
+                    int n_rows = arr.size(); 
+                    
+                    const int now_i = KP_NHD*KP_VPD-1; 
+                    
+                    int k = 0;
+                    // Skip header (i=1)
+                    for (int i=1; i<n_rows && k < KP_NV; i++) {
+                        JsonArray row = arr[i];
+                        kp_cache.x[k] = (k-now_i)/(float)KP_VPD;
+                        kp_cache.p[k] = row[1].as<float>(); 
+                        k++;
+                    }
+                    
+                    if (k >= KP_NV/2) {
+                        // Current value is roughly at now_i if file alignment holds (7 days history)
+                        // Safety check index
+                        int val_i = now_i;
+                        if (val_i >= k) val_i = k-1;
+                        
+                        space_wx[SPCWX_KP].value = kp_cache.p[val_i]; 
+                        space_wx[SPCWX_KP].value_ok = true;
+                        kp_cache.data_ok = true;
+                        kp = kp_cache;
+                        ok = true;
+                        Serial.printf("Kp: Now Val %.2f\n", kp.p[val_i]);
+                    }
+                } else {
+                    Serial.printf("Kp: JSON Err %s\n", err.c_str());
+                }
+                free(buf);
+            }
+            fclose(fp);
         }
-
-        // transaction successful even if data is not
-        ok = true;
-
-        // read lines into kp array and build x
-        const int now_i = KP_NHD*KP_VPD-1;              // last historic is now
-        for (kp_i = 0; kp_i < KP_NV && getTCPLine (kp_client, line, sizeof(line), NULL); kp_i++) {
-            kp_cache.x[kp_i] = (kp_i-now_i)/(float)KP_VPD;
-            kp_cache.p[kp_i] = atof(line);
-        }
-
-        // record sw
-        if (kp_i == KP_NV) {
-
-            // save current (not last!) value
-            space_wx[SPCWX_KP].value = kp_cache.p[now_i];
-            space_wx[SPCWX_KP].value_ok = true;
-            kp_cache.data_ok = true;
-            kp = kp_cache;
-
-        } else {
-
-            Serial.printf ("Kp: data short: %d of %d\n", kp_i, KP_NV);
-        }
-
     } else {
-
-        Serial.print ("Kp: connection failed\n");
+        Serial.printf ("Kp: Download failed\n");
     }
-
-out:
-
-    // set next update
+    
     kp_cache.next_update = ok ? nextRetrieval (PLOT_CH_KP, KP_INTERVAL) : nextWiFiRetry(PLOT_CH_KP);
-
-    // clean up
-    updateClocks(false);
-    kp_client.stop();
-    return (ok);
+    return ok;
 }
 
 /* return whether fresh SPCWX_KP data are ready, even if bad.
@@ -853,6 +886,29 @@ static bool checkForNewDST (void)
 /* retrieve XRay and SPCWX_XRAY if it's time, else use cache.
  * return whether transaction was ok (even if data was not)
  */
+/* parse NOAA JSON time tag "2026-01-31 16:35:00.000"
+ */
+static time_t parse_noaa_json_time(const char *str)
+{
+    if (!str) return 0;
+    int y, m, d, H, M, S;
+    if (sscanf(str, "%d-%d-%d%*c%d:%d:%d", &y, &m, &d, &H, &M, &S) >= 6) {
+        tmElements_t tm;
+        tm.Year = y - 1970;
+        tm.Month = m;
+        tm.Day = d;
+        tm.Hour = H;
+        tm.Minute = M;
+        tm.Second = S;
+        return makeTime(tm);
+    }
+    return 0;
+}
+
+/* retrieve XRay and SPCWX_XRAY if it's time, else use cache.
+ * return whether transaction was ok (even if data was not)
+ * Uses NOAA SWPC JSON via wget
+ */
 bool retrieveXRay (XRayData &xray)
 {
     // check cache first
@@ -861,88 +917,105 @@ bool retrieveXRay (XRayData &xray)
         return (true);
     }
 
-    // get fresh
-    WiFiClient xray_client;
-    char line[100];
-    uint16_t ll;
+    const char *url = "https://services.swpc.noaa.gov/json/goes/primary/xrays-1-day.json";
+    const char *tmp_fn = "/tmp/hc_xray.json";
     bool ok = false;
 
     // mark value as bad until proven otherwise
     space_wx[SPCWX_XRAY].value_ok = false;
     xray.data_ok = xray_cache.data_ok = false;
 
-    Serial.println(xray_page);
-    if (xray_client.connect(backend_host, backend_port)) {
+    Serial.printf("XRay: %s\n", url);
+    if (curlDownload(url, tmp_fn)) {
         updateClocks(false);
-
-        // query web page
-        httpHCGET (xray_client, backend_host, xray_page);
-
-        // soak up remaining header
-        if (!httpSkipHeader (xray_client)) {
-            Serial.print ("XRay: header short\n");
-            goto out;
-        }
-
-        // transaction successful
-        ok = true;
-
-        // collect content lines and extract both wavelength intensities
-        int xray_i = 0;
-        float raw_lxray = 0;
-        while (xray_i < XRAY_NV && getTCPLine (xray_client, line, sizeof(line), &ll)) {
-
-            if (line[0] == '2' && ll >= 56) {
-
-                // short
-                float s = atof(line+35);
-                if (s <= 0)                             // missing values are set to -1.00e+05, also guard 0
-                    s = 1e-9;
-                xray_cache.s[xray_i] = log10f(s);
-
-                // long
-                float l = atof(line+47);
-                if (l <= 0)                             // missing values are set to -1.00e+05, also guard 0
-                    l = 1e-9;
-                xray_cache.l[xray_i] = log10f(l);
-                raw_lxray = l;                          // last one will be current
-
-                // time in hours back from 0
-                xray_cache.x[xray_i] = (xray_i-XRAY_NV)/6.0;       // 6 entries per hour
-
-                // good
-                xray_i++;
+        FILE *fp = fopen(tmp_fn, "r");
+        if (fp) {
+            fseek(fp, 0, SEEK_END);
+            long fsize = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+            char *buf = (char*)malloc(fsize+1);
+            if (buf) {
+                fread(buf, 1, fsize, fp);
+                buf[fsize] = 0;
+                
+                // 1 day JSON is ~650KB. 
+                // Using DynamicJsonDocument (heap)
+                DynamicJsonDocument doc(1024*1024); 
+                DeserializationError err = deserializeJson(doc, buf);
+                
+                if (!err && doc.is<JsonArray>()) {
+                    JsonArray arr = doc.as<JsonArray>();
+                    int n_rows = arr.size();
+                    time_t t0 = myNow();
+                    
+                    // Reset cache
+                    for(int i=0; i<XRAY_NV; i++) {
+                         xray_cache.l[i] = -9.0; // log scale small
+                         xray_cache.s[i] = -9.0;
+                         xray_cache.x[i] = (i-XRAY_NV)/6.0; // hours ago
+                    }
+                    
+                    float final_l = 0;
+                    bool found_any = false;
+                    
+                    for (JsonObject row : arr) {
+                        const char *tag = row["time_tag"];
+                        time_t t = parse_noaa_json_time(tag);
+                        if (t == 0) continue;
+                        
+                        // Map time to index.
+                        // x = (t - t0)/3600.0.
+                        // index = x*6 + XRAY_NV.
+                        // Or reverse:
+                        // t - t0 (seconds ago, negative)
+                        // bin = (t - t0)/600 + XRAY_NV. (10 mins = 600s)
+                        
+                        int idx = (int)((t - t0)/600 + XRAY_NV);
+                        if (idx >= 0 && idx < XRAY_NV) {
+                            const char *energy = row["energy"];
+                            float flux = row["flux"];
+                            if (flux <= 0) flux = 1e-9;
+                            
+                            if (strstr(energy, "0.05-0.4")) {
+                                xray_cache.s[idx] = log10f(flux);
+                            } else {
+                                xray_cache.l[idx] = log10f(flux);
+                                // Is this the absolute latest?
+                                // JSON is usually sorted.
+                                // We want the value at XRAY_NV-1 (Now).
+                                // But mapping might put it at XRAY_NV-1 or -2.
+                                // Just track the latest valid time seen?
+                                final_l = flux; 
+                                found_any = true;
+                            }
+                        }
+                    }
+                    
+                    // Fill gaps? (Nearest neighbor or hold)
+                    // Simple hole filling
+                    for (int i=1; i<XRAY_NV; i++) {
+                        if (xray_cache.l[i] < -8.0 && xray_cache.l[i-1] > -8.0) xray_cache.l[i] = xray_cache.l[i-1];
+                        if (xray_cache.s[i] < -8.0 && xray_cache.s[i-1] > -8.0) xray_cache.s[i] = xray_cache.s[i-1];
+                    }
+                    
+                    if (found_any) {
+                        space_wx[SPCWX_XRAY].value = final_l;
+                        space_wx[SPCWX_XRAY].value_ok = true;
+                        xray_cache.data_ok = true;
+                        xray = xray_cache;
+                        ok = true;
+                        Serial.printf("XRay: Last %.2e\n", final_l);
+                    }
+                }
+                free(buf);
             }
+            fclose(fp);
         }
-
-        // capture iff we found all
-        if (xray_i == XRAY_NV) {
-
-            // capture
-            space_wx[SPCWX_XRAY].value = raw_lxray;
-            space_wx[SPCWX_XRAY].value_ok = true;
-            xray_cache.data_ok = true;
-            xray = xray_cache;
-
-
-        } else {
-
-            Serial.printf ("XRay: data short %d of %d\n", xray_i, XRAY_NV);
-        }
-
     } else {
-
-        Serial.print ("XRay: connection failed\n");
+        Serial.printf ("XRay: Download failed\n");
     }
 
-out:
-
-    // set next update
     xray_cache.next_update = ok ? nextRetrieval (PLOT_CH_XRAY, XRAY_INTERVAL) : nextWiFiRetry(PLOT_CH_XRAY);
-
-    // clean up
-    updateClocks(false);
-    xray_client.stop();
     return (ok);
 }
 
@@ -968,89 +1041,77 @@ bool retrieveBzBt (BzBtData &bzbt)
         return (true);
     }
 
-    // get fresh
-    int bzbt_i;                                     // next index to use
-    WiFiClient bzbt_client;
-    char line[100];
+    const char *url = "https://services.swpc.noaa.gov/products/solar-wind/mag-1-day.json";
+    const char *tmp_fn = "/tmp/hc_bzbt.json";
     bool ok = false;
     time_t t0 = myNow();
 
     // mark data as bad until proven otherwise
     space_wx[SPCWX_BZ].value_ok = false;
     bzbt.data_ok = bzbt_cache.data_ok = false;
-
-    Serial.println(bzbt_page);
-    if (bzbt_client.connect(backend_host, backend_port)) {
+    
+    Serial.printf("BzBt: %s\n", url);
+    if (curlDownload(url, tmp_fn)) {
         updateClocks(false);
-
-        // query web page
-        httpHCGET (bzbt_client, backend_host, bzbt_page);
-
-        // skip over remaining header
-        if (!httpSkipHeader (bzbt_client)) {
-            Serial.print ("BZBT: header short\n");
-            goto out;
-        }
-
-        // transaction successful
-        ok = true;
-
-        // collect content lines and extract both magnetic values, oldest first (newest last :-)
-        // # UNIX        Bx     By     Bz     Bt
-        // 1684087500    1.0   -2.7   -3.2    4.3
-        bzbt_i = 0;
-        while (bzbt_i < BZBT_NV && getTCPLine (bzbt_client, line, sizeof(line), NULL)) {
-
-            // crack
-            // Serial.printf("BZBT: %d %s\n", bzbt_i, line);
-            long unix;
-            float this_bz, this_bt;
-            if (sscanf (line, "%ld %*f %*f %f %f", &unix, &this_bz, &this_bt) != 3) {
-                // Serial.printf ("BZBT: rejecting %s\n", line);
-                continue;
+        FILE *fp = fopen(tmp_fn, "r");
+        if (fp) {
+            fseek(fp, 0, SEEK_END);
+            long fsize = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+            char *buf = (char*)malloc(fsize+1);
+            if (buf) {
+                fread(buf, 1, fsize, fp);
+                buf[fsize] = 0;
+                
+                // 100KB+ for 1-day data, use 1MB buffer for safety
+                DynamicJsonDocument doc(1024*1024);
+                DeserializationError err = deserializeJson(doc, buf);
+                if (!err && doc.is<JsonArray>()) {
+                    JsonArray arr = doc.as<JsonArray>();
+                    int n_rows = arr.size();
+                    
+                    int idx = 0;
+                    // Dynamically calculate step to fit 24h into BZBT_NV (150)
+                    // n_rows includes header. data is n_rows-1.
+                    int n_data = n_rows - 1;
+                    int step = n_data / BZBT_NV;
+                    if (step < 1) step = 1;
+                    
+                    for (int i=1; i<n_rows && idx < BZBT_NV; i+=step) {
+                         JsonArray row = arr[i];
+                         time_t unixs = parse_noaa_json_time(row[0]);
+                         if (unixs == 0) continue;
+                         
+                         // Cols: time, bx, by, bz, lon, lat, bt
+                         bzbt_cache.bz[idx] = row[3].as<float>();
+                         bzbt_cache.bt[idx] = row[6].as<float>();
+                         
+                         bzbt_cache.x[idx] = unixs < t0 ? (unixs - t0)/3600.0F : 0;
+                         idx++;
+                    }
+                    
+                    if (idx >= BZBT_NV/2) {
+                        space_wx[SPCWX_BZ].value = bzbt_cache.bz[idx-1];
+                        space_wx[SPCWX_BZ].value_ok = true;
+                        bzbt_cache.data_ok = true;
+                        bzbt = bzbt_cache;
+                        ok = true;
+                        Serial.printf("BzBt: Last %.1f (count %d)\n", space_wx[SPCWX_BZ].value, idx);
+                    } else {
+                         Serial.printf("BzBt: Too few points %d (step %d, n_rows %d)\n", idx, step, n_rows);
+                    }
+                } else {
+                    Serial.printf("BzBt: JSON Parse Error: %s\n", err.c_str());
+                }
+                free(buf);
             }
-
-            // store at bzbt_i
-            bzbt_cache.bz[bzbt_i] = this_bz;
-            bzbt_cache.bt[bzbt_i] = this_bt;
-
-            // time in hours back from now but clamp at 0 in case we are slightly late
-            bzbt_cache.x[bzbt_i] = unix < t0 ? (unix - t0)/3600.0 : 0;
-
-            // n read
-            bzbt_i++;
+            fclose(fp);
         }
-
-        // proceed iff we found all and current
-        if (bzbt_i == BZBT_NV && bzbt_cache.x[BZBT_NV-1] > -0.25F) {
-
-            // capture latest
-            space_wx[SPCWX_BZ].value = bzbt_cache.bz[BZBT_NV-1];
-            space_wx[SPCWX_BZ].value_ok = true;
-            bzbt_cache.data_ok = true;
-            bzbt = bzbt_cache;
-
-        } else {
-
-            if (bzbt_i < BZBT_NV)
-                Serial.printf ("BZBT: data short %d of %d\n", bzbt_i, BZBT_NV);
-            else
-                Serial.printf ("BZBT: data %g hrs old\n", -bzbt_cache.x[BZBT_NV-1]);
-        }
-
     } else {
-
-        Serial.print ("BZBT: connection failed\n");
+        Serial.printf ("BzBt: Download failed\n");
     }
 
-out:
-
-    // set next update
     bzbt_cache.next_update = ok ? nextRetrieval (PLOT_CH_BZBT, BZBT_INTERVAL) : nextWiFiRetry(PLOT_CH_BZBT);
-
-    // clean up
-    updateClocks(false);
-    bzbt_client.stop();
     return (ok);
 }
 
@@ -1068,6 +1129,14 @@ static bool checkForNewBzBt(void)
 /* retrieve solar wind and SPCWX_SOLWIND if it's time, else use cache.
  * return whether transaction was ok (even if data was not)
  */
+/* parse NOAA JSON time tag "2026-01-31 16:35:00.000"
+ */
+
+
+/* retrieve solar wind and SPCWX_SOLWIND if it's time, else use cache.
+ * return whether transaction was ok (even if data was not)
+ * Uses NOAA SWPC JSON (HTTPS via wget)
+ */
 bool retrieveSolarWind(SolarWindData &sw)
 {
     // check cache first
@@ -1076,98 +1145,86 @@ bool retrieveSolarWind(SolarWindData &sw)
         return (true);
     }
 
-    // get fresh
-    WiFiClient swind_client;
-    char line[80];
+    const char *url = "https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json";
+    const char *tmp_fn = "/tmp/hc_swind.json";
     bool ok = false;
 
     // mark value as bad until proven otherwise
     space_wx[SPCWX_SOLWIND].value_ok = false;
     sw.data_ok = sw_cache.data_ok = false;
 
-    Serial.println (swind_page);
-    if (swind_client.connect(backend_host, backend_port)) {
+    Serial.printf("SolWind: %s\n", url);
+    if (curlDownload(url, tmp_fn)) {
         updateClocks(false);
-
-        // query web page
-        httpHCGET (swind_client, backend_host, swind_page);
-
-        // skip response header
-        if (!httpSkipHeader (swind_client)) {
-            Serial.println ("SolWind: header short");
-            goto out;
-        }
-
-        // transaction successful
-        ok = true;
-
-        // read lines into wind array and build corresponding x/y values
-        time_t t0 = myNow();
-        time_t start_t = t0 - SWIND_PER;
-        time_t prev_unixs = 0;
-        float max_y = 0;
-        for (sw_cache.n_values = 0; sw_cache.n_values < SWIND_MAXN
-                                                && getTCPLine (swind_client, line, sizeof(line), NULL); ) {
-            // Serial.printf ("SolWind: %3d: %s\n", nsw, line);
-            long unixs;         // unix seconds
-            float density;      // /cm^2
-            float speed;        // km/s
-            if (sscanf (line, "%ld %f %f", &unixs, &density, &speed) != 3) {
-                Serial.println ("SolWind: data garbled");
-                goto out;
+        FILE *fp = fopen(tmp_fn, "r");
+        if (fp) {
+            fseek(fp, 0, SEEK_END);
+            long fsize = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+            char *buf = (char*)malloc(fsize+1);
+            if (buf) {
+                fread(buf, 1, fsize, fp);
+                buf[fsize] = 0;
+                
+                // ~70KB for 1-day data, use 1MB buffer for safety
+                DynamicJsonDocument doc(1024*1024);
+                DeserializationError err = deserializeJson(doc, buf);
+                if (!err && doc.is<JsonArray>()) {
+                    JsonArray arr = doc.as<JsonArray>();
+                    int n_rows = arr.size();
+                    
+                    time_t t0 = myNow();
+                    time_t start_t = t0 - SWIND_PER;
+                    time_t prev_unixs = 0;
+                    float max_y = 0;
+                    
+                    sw_cache.n_values = 0;
+                    
+                    // Iterate (skip header)
+                    for (int i=1; i<n_rows && sw_cache.n_values < SWIND_MAXN; i++) {
+                        JsonArray row = arr[i];
+                        time_t unixs = parse_noaa_json_time(row[0]);
+                        if (unixs == 0) continue;
+                        
+                        float density = row[1].as<float>();
+                        float speed = row[2].as<float>();
+                        float this_y = density * speed * 1e-3;
+                        
+                        if (this_y > max_y) max_y = this_y;
+                        
+                        // Check interval (same logic as before)
+                        if ((unixs < start_t || unixs - prev_unixs < SWIND_DT) && sw_cache.n_values != SWIND_MAXN-1) {
+                            // accumulate max_y, check next point
+                            continue;
+                        }
+                        prev_unixs = unixs;
+                        
+                        sw_cache.x[sw_cache.n_values] = (t0 - unixs)/(-3600.0F); // hours back (neg)
+                        sw_cache.y[sw_cache.n_values] = max_y;
+                        
+                        max_y = 0; // reset for next bin
+                        sw_cache.n_values++;
+                    }
+                    
+                    if (sw_cache.n_values >= SWIND_MINN) {
+                        space_wx[SPCWX_SOLWIND].value = sw_cache.y[sw_cache.n_values-1];
+                        space_wx[SPCWX_SOLWIND].value_ok = true;
+                        sw_cache.data_ok = true;
+                        sw = sw_cache;
+                        ok = true;
+                        Serial.printf("SolWind: Last %.2f (n=%d)\n", space_wx[SPCWX_SOLWIND].value, sw_cache.n_values);
+                    }
+                }
+                free(buf);
             }
-
-            // want y axis to be 10^12 /s /m^2
-            float this_y = density * speed * 1e-3;
-
-            // capture largest value in this period
-            if (this_y > max_y)
-                max_y = this_y;
-
-            // skip until find within period and new interval or always included last
-            if ((unixs < start_t || unixs - prev_unixs < SWIND_DT) && sw_cache.n_values != SWIND_MAXN-1)
-                continue;
-            prev_unixs = unixs;
-
-            // want x axis to be hours back from now
-            sw_cache.x[sw_cache.n_values] = (t0 - unixs)/(-3600.0F);
-            sw_cache.y[sw_cache.n_values] = max_y;
-            // Serial.printf ("SolWind: %3d %5.2f %5.2f\n", nsw, x[nsw], y[nsw]);
-
-            // good one
-            max_y = 0;
-            sw_cache.n_values++;
+            fclose(fp);
         }
-
-        updateClocks(false);
-
-        // good iff found enough
-        if (sw_cache.n_values >= SWIND_MINN) {
-
-            // capture latest
-            space_wx[SPCWX_SOLWIND].value = sw_cache.y[sw_cache.n_values-1];
-            space_wx[SPCWX_SOLWIND].value_ok = true;
-            sw_cache.data_ok = true;
-            sw = sw_cache;
-
-        } else {
-            Serial.println ("SolWind:: data error");
-        }
-
     } else {
-
-        Serial.println ("SolWind: connection failed");
+        Serial.printf ("SolWind: Download failed\n");
     }
 
-out:
-
-    // set next update
     sw_cache.next_update = ok ? nextRetrieval (PLOT_CH_SOLWIND, SWIND_INTERVAL)
                               : nextWiFiRetry(PLOT_CH_SOLWIND);
-
-    // clean up
-    updateClocks(false);
-    swind_client.stop();
     return (ok);
 }
 
@@ -1311,52 +1368,60 @@ bool retrieveAurora (AuroraData &aurora)
         return (true);
     }
 
-    // get fresh
-    WiFiClient aurora_client;                                           // wifi client connection
-    char line[100];                                                     // text line
-    bool ok = false;                                                    // set iff all ok
+    const char *url = "https://services.swpc.noaa.gov/text/aurora-nowcast-hemi-power.txt";
+    const char *tmp_fn = "/tmp/hc_aurora.txt";
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "wget -q -T 15 -O %s \"%s\" || curl -s -m 15 -o %s \"%s\"", tmp_fn, url, tmp_fn, url);
+    
+    Serial.printf("AURORA: Downloading %s\n", url);
+    updateClocks(false);
+    
+    if (!curlDownload(url, tmp_fn)) {
+        Serial.printf("AURORA: Download failed\n");
+        aurora_cache.next_update = myNow() + 300;
+        return false;
+    }
+    
+    FILE *fp = fopen(tmp_fn, "r");
+    if (!fp) {
+        Serial.printf("AURORA: Open %s failed\n", tmp_fn);
+        aurora_cache.next_update = myNow() + 300;
+        return false;
+    }
 
     // mark data as bad until proven otherwise
     space_wx[SPCWX_AURORA].value_ok = false;
     aurora.data_ok = aurora_cache.data_ok = false;
 
-    Serial.println (aurora_page);
-    if (aurora_client.connect(backend_host, backend_port)) {
-        updateClocks(false);
+    // init state
+    time_t t_now = myNow();
+    float prev_age = 1e10;
+    aurora_cache.n_points = 0;
+    char line[128];
 
-        // query web page
-        httpHCGET (aurora_client, backend_host, aurora_page);
+    // read lines keep up to AURORA_NPTS newest
+    while (fgets(line, sizeof(line), fp)) {
+        if (line[0] == '#' || strlen(line) < 16) continue;
 
-        // skip response header
-        if (!httpSkipHeader (aurora_client)) {
-            Serial.print ("AURORA: header short\n");
-            goto out;
-        }
-
-        // transaction itself is successful
-        ok = true;
-
-        // init state
-        time_t t_now = myNow();
-        float prev_age = 1e10;
-        aurora_cache.n_points = 0;
-
-        // read lines keep up to AURORA_NPTS newest
-        while (getTCPLine (aurora_client, line, sizeof(line), NULL)) {
-
-            // crack
-            long utime;
-            float percent;
-            if (sscanf (line, "%ld %f", &utime, &percent) != 2) {
-                Serial.printf ("AURORA: garbled: %s\n", line);
-                goto out;
-            }
-            // Serial.printf ("AURORA: %ld %g\n", utime, percent
+        // 2026-01-31_00:00    2026-01-31_00:50      28      25
+        int yr, mo, dy, hr, mn;
+        float n, s;
+        // Parse "ObsTime ForecastTime N S". format: YYYY-MM-DD_HH:MM
+        if (sscanf(line, "%d-%d-%d_%d:%d %*s %f %f", &yr, &mo, &dy, &hr, &mn, &n, &s) == 7) {
+            
+            struct tm tm = {0};
+            tm.tm_year = yr - 1900;
+            tm.tm_mon = mo - 1;
+            tm.tm_mday = dy;
+            tm.tm_hour = hr;
+            tm.tm_min = mn;
+            time_t utime = mktime(&tm); 
+            
+            float power = (n > s) ? n : s;
 
             // find age for this datum, skip if crazy new or too old or out of order
             float age = (t_now - utime)/3600.0F;        // seconds to hours
             if (age < 0 || age > AURORA_MAXAGE || age >= prev_age) {
-                Serial.printf ("AURORA: skipping age %g hrs\n", age);
                 continue;
             }
             prev_age = age;
@@ -1368,47 +1433,30 @@ bool retrieveAurora (AuroraData &aurora)
                 aurora_cache.n_points = AURORA_MAXPTS - 1;
             }
             aurora_cache.age_hrs[aurora_cache.n_points] = -age;               // want "ago"
-            aurora_cache.percent[aurora_cache.n_points] = percent;
+            aurora_cache.percent[aurora_cache.n_points] = power;
             aurora_cache.n_points++;
         }
-
-        // look alive
-        updateClocks(false);
-
-        // require at least a few recent
-        if (aurora_cache.n_points < 5) {
-            Serial.printf ("AURORA: only %d points\n", aurora_cache.n_points);
-        } else if (aurora_cache.age_hrs[aurora_cache.n_points-1] <= -1.0F) {
-            Serial.printf ("AURORA: newest is too old: %g hrs\n",
-                                -aurora_cache.age_hrs[aurora_cache.n_points-1]);
-        } else {
-
-            // good
-            Serial.printf ("AURORA: found %d points [%g,%g] hrs old\n", aurora_cache.n_points,
-                    -aurora_cache.age_hrs[0], -aurora_cache.age_hrs[aurora_cache.n_points-1]);
-
-            // capture newest value for space wx
-            space_wx[SPCWX_AURORA].value = aurora_cache.percent[aurora_cache.n_points-1];
-            space_wx[SPCWX_AURORA].value_ok = true;
-            aurora_cache.data_ok = true;
-            aurora = aurora_cache;
-        }
-
-    } else {
-
-        Serial.print ("AURORA: connection failed\n");
     }
+    
+    fclose(fp);
+    unlink(tmp_fn);
 
-out:
-
-    // set next update
-    aurora_cache.next_update = ok ? nextRetrieval (PLOT_CH_AURORA, AURORA_INTERVAL)
-                                  : nextWiFiRetry(PLOT_CH_AURORA);
-
-    // clean up
-    updateClocks(false);
-    aurora_client.stop();
-    return (ok);
+    bool ok = false;
+    // require at least a few recent
+    if (aurora_cache.n_points < 5) {
+        Serial.printf ("AURORA: too few points: %d\n", aurora_cache.n_points);
+        // don't set next update far in future if failed
+        aurora_cache.next_update = myNow() + 300;
+    } else {
+        space_wx[SPCWX_AURORA].value = aurora_cache.percent[aurora_cache.n_points-1];
+        space_wx[SPCWX_AURORA].value_ok = true;
+        aurora.data_ok = aurora_cache.data_ok = true;
+        aurora_cache.next_update = myNow() + 3600;
+        aurora = aurora_cache;
+        ok = true;
+    }
+    
+    return ok;
 }
 
 /* return whether fresh SPCWX_AURORA data are ready, even if bad.

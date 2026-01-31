@@ -116,7 +116,7 @@
 typedef struct {
     uint16_t x, y;
 } SCoord;
-#include "Adafruit_RA8875.h"
+#include "src/hal/linux/Adafruit_RA8875.h"
 #include "Adafruit_MCP23X17.h"
 
 // HamClock modules
@@ -1426,6 +1426,7 @@ extern void doNCDXFBoxTouch (TouchType tt, const SCoord &s);
 #define CACHE_NONE    1                         // remove all files older than 1 second
 
 extern FILE *openCachedFile (const char *fn, const char *url, int max_age, int min_size);
+extern bool curlDownload(const char *url, const char *filename);
 extern bool cleanCache (const char *contains, int max_age);
 
 

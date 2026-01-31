@@ -6,6 +6,7 @@
 
 
 #include "HamClock.h"
+#include <ArduinoJson.h>
 
 // downloads
 static const char wx_ll[] = "/wx.pl";                   // URL for requesting specific wx/time at lat/lng
@@ -242,114 +243,109 @@ static bool retrieveWorldWx(void)
     return (ok);
 }
 
-/* download current weather and time info for the given exact location.
+/* convert OpenMeteo code to string
+ */
+static const char *getWxConditions(int code)
+{
+    if (code == 0) return "Clear";
+    if (code <= 3) return "Partly Cloudy";
+    if (code <= 48) return "Fog";
+    if (code <= 57) return "Drizzle";
+    if (code <= 67) return "Rain";
+    if (code <= 77) return "Snow";
+    if (code <= 82) return "Showers";
+    if (code <= 99) return "Thunderstorm";
+    return "Unknown";
+}
+
+/* download current weather and time info for the given exact location using Open-Meteo.
  * if wxc.info is filled ok return true, else return false with short reason in wxc.ynot
  */
 static bool retrieveCurrentWX (const LatLong &ll, bool is_de, WXCache &wxc)
 {
     WXInfo &wxi = wxc.info;
-
     WiFiClient wx_client;
-    char line[100];
-
+    const char *host = "api.open-meteo.com";
     bool ok = false;
+    
+    // Construct URL for Open-Meteo
+    char url[256];
+    snprintf(url, sizeof(url), 
+        "/v1/forecast?latitude=%.4f&longitude=%.4f&current=temperature_2m,relative_humidity_2m,surface_pressure,wind_speed_10m,wind_direction_10m,weather_code,cloud_cover&wind_speed_unit=ms",
+        ll.lat_d, ll.lng_d);
 
-    // get
-    if (wx_client.connect(backend_host, backend_port)) {
+    Serial.printf ("WX: %s%s\n", host, url);
+
+    if (wx_client.connect(host, 80)) {
         updateClocks(false);
-
-        // query web page
-        snprintf (line, sizeof(line), "%s?is_de=%d&lat=%g&lng=%g", wx_ll, is_de, ll.lat_d, ll.lng_d);
-        Serial.printf ("WX: %s\n", line);
-        httpHCGET (wx_client, backend_host, line);
-
-        // skip response header
-        if (!httpSkipHeader (wx_client)) {
-            quietStrncpy (wxc.ynot, "WX timeout", sizeof(wxc.ynot));
+        
+        // Send manual GET to avoid httpHCGET prepending path
+        wx_client.print("GET "); wx_client.print(url); wx_client.print(" HTTP/1.0\r\n");
+        wx_client.print("Host: "); wx_client.print(host); wx_client.print("\r\n");
+        wx_client.print("User-Agent: ESPHamClock\r\n");
+        wx_client.print("Connection: close\r\n\r\n");
+        
+        if (!httpSkipHeader(wx_client)) {
+            quietStrncpy(wxc.ynot, "WX timeout", sizeof(wxc.ynot));
             goto out;
         }
 
-        // init response 
+        // Parse JSON
+        StaticJsonDocument<1536> doc;
+        DeserializationError error = deserializeJson(doc, wx_client);
+        
+        if (error) {
+            Serial.printf("WX: JSON error: %s\n", error.c_str());
+            quietStrncpy(wxc.ynot, "WX JSON Err", sizeof(wxc.ynot));
+            goto out;
+        }
+
+        JsonObject current = doc["current"];
+        if (current.isNull()) {
+            quietStrncpy(wxc.ynot, "Missing WX data", sizeof(wxc.ynot));
+            goto out;
+        }
+
+        // Clear and Fill WXInfo
         memset (&wxi, 0, sizeof(WXInfo));
 
-        // crack response
-        uint8_t n_found = 0;
-        while (n_found < N_WXINFO_FIELDS && getTCPLine (wx_client, line, sizeof(line), NULL)) {
+        wxi.temperature_c = current["temperature_2m"];
+        wxi.humidity_percent = current["relative_humidity_2m"];
+        wxi.pressure_hPa = current["surface_pressure"];
+        wxi.wind_speed_mps = current["wind_speed_10m"];
+        float wdir = current["wind_direction_10m"];
+        windDeg2Name(wdir, wxi.wind_dir_name);
+        
+        int code = current["weather_code"];
+        quietStrncpy(wxi.conditions, getWxConditions(code), sizeof(wxi.conditions));
+        
+        int clouds = current["cloud_cover"];
+        snprintf(wxi.clouds, sizeof(wxi.clouds), "%d%%", clouds);
+        
+        // Timezone (offset in seconds)
+        wxi.timezone = doc["utc_offset_seconds"];
+        
+        // Attribution
+        quietStrncpy(wxi.attribution, "Open-Meteo.com", sizeof(wxi.attribution));
 
-            if (debugLevel (DEBUG_WX, 1))
-                Serial.printf ("WX: %s\n", line);
-
-            updateClocks(false);
-
-            // check for error message in which case abandon further search
-            if (strncmp (line, "error=", 6) == 0) {
-                quietStrncpy (wxc.ynot, line+6, sizeof(wxc.ynot));
-                goto out;
-            }
-
-            // find start of data value after =
-            char *vstart = strchr (line, '=');
-            if (!vstart)
-                continue;
-            *vstart++ = '\0';   // eos for name and move to value
-
-            // check for content line
-            if (strcmp (line, "city") == 0) {
-                quietStrncpy (wxi.city, vstart, sizeof(wxi.city));
-                n_found++;
-            } else if (strcmp (line, "temperature_c") == 0) {
-                wxi.temperature_c = atof (vstart);
-                n_found++;
-            } else if (strcmp (line, "pressure_hPa") == 0) {
-                wxi.pressure_hPa = atof (vstart);
-                n_found++;
-            } else if (strcmp (line, "pressure_chg") == 0) {
-                wxi.pressure_chg = atof (vstart);
-                n_found++;
-            } else if (strcmp (line, "humidity_percent") == 0) {
-                wxi.humidity_percent = atof (vstart);
-                n_found++;
-            } else if (strcmp (line, "wind_speed_mps") == 0) {
-                wxi.wind_speed_mps = atof (vstart);
-                n_found++;
-            } else if (strcmp (line, "wind_dir_name") == 0) {
-                quietStrncpy (wxi.wind_dir_name, vstart, sizeof(wxi.wind_dir_name));
-                n_found++;
-            } else if (strcmp (line, "clouds") == 0) {
-                quietStrncpy (wxi.clouds, vstart, sizeof(wxi.clouds));
-                n_found++;
-            } else if (strcmp (line, "conditions") == 0) {
-                quietStrncpy (wxi.conditions, vstart, sizeof(wxi.conditions));
-                n_found++;
-            } else if (strcmp (line, "attribution") == 0) {
-                quietStrncpy (wxi.attribution, vstart, sizeof(wxi.attribution));
-                n_found++;
-            } else if (strcmp (line, "timezone") == 0) {
-                wxi.timezone = atoi (vstart);
-                n_found++;
-            }
-
-            // Serial.printf ("WX %d: %s\n", n_found, line);
+        // Lookup nearest city name from internal database
+        LatLong city_ll;
+        const char *city_name = getNearestCity(ll, city_ll, NULL);
+        if (city_name) {
+            quietStrncpy(wxi.city, city_name, sizeof(wxi.city));
+        } else {
+            quietStrncpy(wxi.city, is_de ? "Local" : "DX", sizeof(wxi.city));
         }
-
-        if (n_found < N_WXINFO_FIELDS) {
-            quietStrncpy (wxc.ynot, "Missing WX data", sizeof(wxc.ynot));
-            goto out;
-        }
-
-        // ok!
+        
         ok = true;
 
     } else {
-
-        quietStrncpy (wxc.ynot, "WX connection failed", sizeof(wxc.ynot));
-
+        quietStrncpy(wxc.ynot, "WX connection failed", sizeof(wxc.ynot));
     }
 
-    // clean up
 out:
     wx_client.stop();
-    return (ok);
+    return ok;
 }
 
 

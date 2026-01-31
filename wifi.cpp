@@ -214,78 +214,94 @@ time_t nextRotation (PlotPane pp)
 /* set de_ll.lat_d and de_ll.lng_d from the given ip else our public ip.
  * report status via tftMsg
  */
+#include <ArduinoJson.h>
+
+/* set de_ll.lat_d and de_ll.lng_d from the given ip else our public ip.
+ * report status via tftMsg
+ * Uses ip-api.com directly.
+ */
 static void geolocateIP (const char *ip)
 {
     WiFiClient iploc_client;                            // wifi client connection
-    float lat, lng;
-    char llline[80];
-    char ipline[80];
-    char credline[80];
-    int nlines = 0;
+    const char *host = "ip-api.com";
+    int port = 80;
+    char path[80];
+    // ip-api response is small (~300 bytes), 1024 is plenty.
+    // We can stream directly from client to deserializeJson to save memory!
+    // But WiFiClient stream support in ArduinoJson might depend on implementation.
+    // ArduinoLib's WiFiClient inherits from nothing? No, it should work if it has read().
+    // But let's stick to buffer for safety/debugging.
+    char json_buf[1024];
 
-    if (iploc_client.connect(backend_host, backend_port)) {
+    strcpy(path, "/json/");
+    if (ip)
+        strncat(path, ip, sizeof(path)-strlen(path)-1);
 
-        // create proper query
-        strcpy (llline, locip_page);
-        size_t l = sizeof(locip_page) - 1;              // not EOS
-        if (ip)                                         // else locip_page will use client IP
-            l += snprintf (llline+l, sizeof(llline)-l, "?IP=%s", ip);
-        Serial.println(llline);
+    if (iploc_client.connect(host, port)) {
 
-        // send
-        httpHCGET (iploc_client, backend_host, llline);
+        // send GET
+        httpHCGET (iploc_client, host, path);
         if (!httpSkipHeader (iploc_client)) {
-            Serial.println ("geoIP header short");
+            Serial.println ("GeoIP: header error");
             goto out;
         }
 
-        // expect 4 lines: LAT=, LNG=, IP= and CREDIT=, anything else first line is error message
-        if (!getTCPLine (iploc_client, llline, sizeof(llline), NULL))
-            goto out;
-        nlines++;
-        lat = atof (llline+4);
-        if (!getTCPLine (iploc_client, llline, sizeof(llline), NULL))
-            goto out;
-        nlines++;
-        lng = atof (llline+4);
-        if (!getTCPLine (iploc_client, ipline, sizeof(ipline), NULL))
-            goto out;
-        nlines++;
-        if (!getTCPLine (iploc_client, credline, sizeof(credline), NULL))
-            goto out;
-        nlines++;
+        // Read body into buffer
+        // Note: we could use deserializeJson(doc, iploc_client) directly if WiFiClient implemented Stream,
+        // but let's be safe and read to buffer first.
+        int n = 0;
+        unsigned long t0 = millis();
+        while (millis() - t0 < 3000) {
+            if (iploc_client.available()) {
+                char c = iploc_client.read();
+                if (n < (int)sizeof(json_buf)-1)
+                    json_buf[n++] = c;
+            } else if (!iploc_client.connected()) {
+                break;
+            } else {
+                wdDelay(10);
+            }
+        }
+        json_buf[n] = 0;
+
+        // Parse with ArduinoJson
+        StaticJsonDocument<1024> doc; // Stack allocation is fast
+        DeserializationError error = deserializeJson(doc, json_buf);
+
+        if (!error) {
+            float lat = doc["lat"]; // 0.0 if missing
+            float lon = doc["lon"];
+            const char *query = doc["query"]; // IP
+            const char *city = doc["city"];
+            
+            // ip-api returns "success" status
+            const char *status = doc["status"];
+            if (status && strcmp(status, "success") == 0) {
+                 tftMsg (true, 0, "IP %s geolocation", query ? query : "?");
+                 tftMsg (true, 0, "  by ip-api.com (%s)", city ? city : "Unknown");
+                 tftMsg (true, 0, "  %.2f%c %.2f%c", fabsf(lat), lat < 0 ? 'S' : 'N',
+                                        fabsf(lon), lon < 0 ? 'W' : 'E');
+
+                de_ll.lat_d = lat;
+                de_ll.lng_d = lon;
+                de_ll.normalize();
+                NVWriteFloat (NV_DE_LAT, de_ll.lat_d);
+                NVWriteFloat (NV_DE_LNG, de_ll.lng_d);
+                setNVMaidenhead (NV_DE_GRID, de_ll);
+                setTZAuto (de_tz);
+                NVWriteTZ (NV_DE_TZ, de_tz);
+            } else {
+                tftMsg(true, 1000, "GeoIP API error: %s", status);
+            }
+        } else {
+             tftMsg(true, 1000, "GeoIP JSON error: %s", error.c_str());
+             Serial.printf("JSON: %s\n", json_buf);
+        } 
+    } else {
+        tftMsg(true, 1000, "GeoIP connection failed");
     }
 
 out:
-
-    if (nlines == 4) {
-        // ok
-
-        tftMsg (true, 0, "IP %s geolocation", ipline+3);
-        tftMsg (true, 0, "  by %s", credline+7);
-        tftMsg (true, 0, "  %.2f%c %.2f%c", fabsf(lat), lat < 0 ? 'S' : 'N',
-                                fabsf(lng), lng < 0 ? 'W' : 'E');
-
-        de_ll.lat_d = lat;
-        de_ll.lng_d = lng;
-        de_ll.normalize();
-        NVWriteFloat (NV_DE_LAT, de_ll.lat_d);
-        NVWriteFloat (NV_DE_LNG, de_ll.lng_d);
-        setNVMaidenhead (NV_DE_GRID, de_ll);
-        setTZAuto (de_tz);
-        NVWriteTZ (NV_DE_TZ, de_tz);
-
-
-    } else {
-        // trouble, error message if 1 line
-
-        if (nlines == 1) {
-            tftMsg (true, 0, "IP geolocation err:");
-            tftMsg (true, 1000, "  %s", llline);
-        } else
-            tftMsg (true, 1000, "IP geolocation failed");
-    }
-
     iploc_client.stop();
 }
 
@@ -1802,8 +1818,8 @@ static bool updateAurora (const SBox &box)
             // plot
             char aurora_label[30];
             snprintf (aurora_label, sizeof(aurora_label), "%.0f", a.percent[a.n_points-1]);
-            plotXYstr (box, a.age_hrs, a.percent, a.n_points, "Hours", "Aurora Chances, max %",
-                                        AURORA_COLOR, 0, 100, aurora_label);
+            plotXYstr (box, a.age_hrs, a.percent, a.n_points, "Hours", "HPI (GW)",
+                                        AURORA_COLOR, 0, 0, aurora_label);
         }
 
         // update NCDXF box either way
