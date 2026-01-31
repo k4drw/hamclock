@@ -2,6 +2,7 @@
  */
 
 #include "HamClock.h"
+#include <sys/stat.h>
 
 
 
@@ -399,128 +400,169 @@ static void scrubContestTitleLine (char *line, const SBox &box)
         line[--ll] = '\0';
 }
 
+/* helper to parse iCal date strings YYYYMMDDTHHMMSSZ
+ */
+static time_t parse_ical_time(const char *str)
+{
+    tmElements_t tm;
+    int y, m, d, H, M, S;
+    // Format 20260131T120000Z. Using %*c to skip T and Z if they are fixed positions
+    // Actually sscanf can skip chars.
+    if (sscanf(str, "%4d%2d%2dT%2d%2d%2d", &y, &m, &d, &H, &M, &S) == 6) {
+        tm.Year = y - 1970; // TimeLib uses offset from 1970
+        tm.Month = m;
+        tm.Day = d;
+        tm.Hour = H;
+        tm.Minute = M;
+        tm.Second = S;
+        return makeTime(tm);
+    }
+    return 0;
+}
+
 /* collect Contest info into the contests[] array.
  * return whether io ok.
+ * Fetches from Google Calendar iCal via wget (to support HTTPS on Linux)
  */
 static bool retrieveContests (const SBox &box)
 {
-    WiFiClient ctst_client;
+    // Google Calendar iCal URL
+    const char *url = "https://calendar.google.com/calendar/ical/9o3or51jjdsantmsqoadmm949k%40group.calendar.google.com/public/basic.ics";
+    const char *tmp_fn = "/tmp/hc_contests.ics";
     bool ok = false;
+    
+    // Check Cache
+    bool download = true;
+    struct stat st;
+    if (stat(tmp_fn, &st) == 0 && st.st_size > 1000) {
+        if (myNow() - st.st_mtime < 3600) {
+             download = false;
+        }
+    }
+    
+    if (download) {
+        char cmd[1024];
+        // Use wget; quiet, output to tmp_fn
+        snprintf(cmd, sizeof(cmd), "wget -q -O %s '%s'", tmp_fn, url);
+        Serial.printf("CTS: Downloading contests...\n");
+        if (system(cmd) != 0) {
+             Serial.printf("CTS: Download failed\n");
+             // if download failed but we have an old file, maybe use it?
+             // for now, just fail if no file.
+        }
+    }
+
+    FILE *fp = fopen(tmp_fn, "r");
+    if (!fp) return false;
 
     // insure date state is up to date
     loadContestNV();
 
-    // download and load contests[]
-    FILE *fp = openCachedFile (contests_fn, contests_page, CONTESTS_MAXAGE, CONTESTS_MINSIZ);
+    // look alive
+    updateClocks(false);
 
-    if (fp) {
+    // handy UTC
+    time_t now = myNow();
 
-        // look alive
-        updateClocks(false);
+    // reset contests and credit
+    for (int i = 0; i < cts_ss.n_data; i++) {
+        ContestEntry &ce = contests[i];
+        free (ce.date_str);
+        free (ce.title);
+        free (ce.url);
+    }
+    free (contests);
+    contests = NULL;
+    free (credit);
+    credit = strdup("WA7BNM Contest Calendar");
 
-        // handy UTC
-        time_t now = myNow();
+    // init scroller and max data size. max_vis is half the number of rows if showing date too.
+    cts_ss.init ((box.h - START_DY)/CONTEST_DY, 0, 0, cts_ss.DIR_TOPDOWN);
+    if (show_date)
+        cts_ss.max_vis /= 2;
 
-        // reset contests and credit
-        for (int i = 0; i < cts_ss.n_data; i++) {
-            ContestEntry &ce = contests[i];
-            free (ce.date_str);
-            free (ce.title);
-            free (ce.url);
-        }
-        free (contests);
-        contests = NULL;
-        free (credit);
-        credit = NULL;
+    // Parser State
+    char line[1024];
+    bool in_event = false;
+    time_t t_start = 0, t_end = 0;
+    char title[128] = {0};
+    char link[256] = {0};
 
-        // init scroller and max data size. max_vis is half the number of rows if showing date too.
-        cts_ss.init ((box.h - START_DY)/CONTEST_DY, 0, 0, cts_ss.DIR_TOPDOWN);
-        if (show_date)
-            cts_ss.max_vis /= 2;
+    // set font for scrubContestTitleLine() and formatTimeLine()
+    selectFontStyle (LIGHT_FONT, FAST_FONT);
 
-        // contests consist of 2 lines each
-        char line1[100], line2[100];
+    while (fgets(line, sizeof(line), fp)) {
+        // Strip CRLF
+        int len = strlen(line);
+        while (len > 0 && (line[len-1] == '\r' || line[len-1] == '\n')) line[--len] = 0;
 
-        // first line is credit
-        if (!fgets (line1, sizeof(line1), fp)) {
-            Serial.printf ("CTS: %s no credit line\n", contests_fn);
-            goto out;
-        }
-        chompString (line1);
-        credit = strdup (line1);
+        if (strstr(line, "BEGIN:VEVENT")) {
+            in_event = true;
+            t_start = t_end = 0;
+            title[0] = link[0] = 0;
+        } else if (strstr(line, "END:VEVENT")) {
+             // Validate and Add
+             if (in_event && t_start && t_end && title[0] && t_end > now) {
+                 
+                 contests = (ContestEntry*) realloc (contests, (cts_ss.n_data+1) * sizeof(ContestEntry));
+                 if (!contests) fatalError ("No memory for contests");
+                 
+                 ContestEntry &ce = contests[cts_ss.n_data++];
+                 memset (&ce, 0, sizeof(ContestEntry));
+                 
+                 ce.start_t = t_start;
+                 ce.end_t = t_end;
+                 
+                 // Title
+                 scrubContestTitleLine(title, box);
+                 ce.title = strdup(title);
+                 
+                 // URL
+                 if (link[0]) ce.url = strdup(link);
+                 else ce.url = strdup("https://contestcalendar.com");
 
-        // consider transaction is ok if get at least the credit message
-        ok = true;
-
-        // set font for scrubContestTitleLine() and formatTimeLine()
-        selectFontStyle (LIGHT_FONT, FAST_FONT);
-
-        // read 2 lines per contest: info and url
-        while (fgets (line1, sizeof(line1), fp) && fgets (line2, sizeof(line2), fp)) {
-
-            // chomp
-            chompString (line1);
-            chompString (line2);
-
-            if (debugLevel (DEBUG_CONTESTS, 1))
-                Serial.printf ("CTS line %d: %s\n%s\n", cts_ss.n_data, line1, line2);
-
-            // split line1 into the two unix UTC times and the title
-            char *ut1 = line1;
-            char *ut2 = strchr (ut1, ' ');
-            if (!ut2) {
-                Serial.printf ("CTS: line has no ut2: %s\n", line1);
-                continue;
-            }
-            char *title = strchr (++ut2, ' ');
-            if (!title) {
-                Serial.printf ("CTS: line has no title: %s\n", line1);
-                continue;
-            }
-
-            // skip if contest is already over
-            time_t end_t = atol(ut2);
-            if (now > end_t) {
-                Serial.printf ("CTS %s is already passed %s %d %02d:%02d Z\n", title,
-                                    monthShortStr(month(end_t)), day(end_t), hour(end_t), minute(end_t));
-                continue;
-            }
-
-            // clean up title to fix in box
-            scrubContestTitleLine (++title, box);
-
-            // looks good, add to contests[]
-            contests = (ContestEntry*) realloc (contests, (cts_ss.n_data+1) * sizeof(ContestEntry));
-            if (!contests)
-                fatalError ("No memory for %d contests", cts_ss.n_data+1);
-            ContestEntry &ce = contests[cts_ss.n_data++];
-            memset (&ce, 0, sizeof(ContestEntry));
-
-            // save times, title and url 
-            if (debugLevel (DEBUG_CONTESTS, 2)) {
-                // inject as recent times
-                ce.start_t = myNow() - 180 + 60*cts_ss.n_data;
-                ce.end_t = myNow() + 60*cts_ss.n_data;
-            } else {
-                ce.start_t = atol (ut1);
-                ce.end_t = end_t;
-            }
-            ce.title = strdup (title);                  // N.B. must free()
-            ce.url = strdup (line2);                    // N.B. must free()
-
-            // format date string. N.B. we REUSE line2 (ut1 and ut2 are in line1)
-            formatTimeLine (box, ce.start_t, ce.end_t, line2, sizeof(line2));
-            ce.date_str = strdup (line2);               // N.B. must free()
+                 // Format Date
+                 char date_buf[100];
+                 formatTimeLine (box, ce.start_t, ce.end_t, date_buf, sizeof(date_buf));
+                 ce.date_str = strdup(date_buf);
+                 
+                 ok = true;
+             }
+             in_event = false;
+        } else if (in_event) {
+             if (strncmp(line, "DTSTART:", 8) == 0) {
+                  t_start = parse_ical_time(line+8);
+             } else if (strncmp(line, "DTEND:", 6) == 0) {
+                  t_end = parse_ical_time(line+6);
+             } else if (strncmp(line, "SUMMARY:", 8) == 0) {
+                  strncpy(title, line+8, sizeof(title)-1);
+             } else if (strncmp(line, "DESCRIPTION:", 12) == 0) {
+                  // Link extraction: look for href=
+                  const char *p = strstr(line, "href=");
+                  if (p) {
+                      p += 5; // past href=
+                      char quote = *p;
+                      if (quote == '"' || quote == '\'') {
+                          p++;
+                          const char *end = strchr(p, quote);
+                          if (end) {
+                               int l = end - p;
+                               if (l > (int)sizeof(link)-1) l = sizeof(link)-1;
+                               strncpy(link, p, l);
+                               link[l] = 0;
+                          }
+                      }
+                  }
+             }
         }
     }
 
-out:
+    fclose(fp);
 
     if (ok)
         qsort (contests, cts_ss.n_data, sizeof(ContestEntry), qsContestStart);
 
-    Serial.printf ("CTS: found %d in %s\n", cts_ss.n_data, contests_fn);
-    fclose (fp);
+    Serial.printf ("CTS: found %d contests (ical)\n", cts_ss.n_data);
     return (ok);
 }
 

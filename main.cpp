@@ -22,6 +22,7 @@ char **our_argv;                // our argv for restarting
 std::string our_dir;            // our storage directory, including trailing /
 bool rm_eeprom;                 // set by -0 to rm eeprom to restore defaults
 bool ignore_x11geom;            // set by -q to ignore startup loc and size
+bool verbose_logging;           // set by -D to enable verbose logs
 
 // list of diagnostic files, newest first
 const char *diag_files[N_DIAG_FILES] = {
@@ -88,52 +89,7 @@ static void initBuildVariables(void)
 
 
 
-/* return milliseconds since first call
- */
-uint32_t millis(void)
-{
-    #if defined(CLOCK_MONOTONIC_FAST_XXXX)
-        // this is only on FreeBSD but is fully 200x faster than gettimeofday or CLOCK_MONOTONIC
-        // as of 14-RELEASE now this one is slow -- use normal gettimeofday
-	static struct timespec t0;
-	struct timespec t;
-	clock_gettime (CLOCK_MONOTONIC_FAST, &t);
-	if (t0.tv_sec == 0)
-	    t0 = t;
-	uint32_t dt_ms = (t.tv_sec - t0.tv_sec)*1000 + (t.tv_nsec - t0.tv_nsec)/1000000;
-	return (dt_ms);
-    #else
-	static struct timeval t0;
-	struct timeval t;
-	gettimeofday (&t, NULL);
-	if (t0.tv_sec == 0)
-	    t0 = t;
-	uint32_t dt_ms = (t.tv_sec - t0.tv_sec)*1000 + (t.tv_usec - t0.tv_usec)/1000;
-	return (dt_ms);
-    #endif
-}
 
-void delay (uint32_t ms)
-{
-	usleep (ms*1000);
-}
-
-long random(int max)
-{
-        return ((::random() >> 3) % max);
-}
-
-void randomSeed (int s)
-{
-    ::srandom(s);
-}
-
-uint16_t analogRead(int pin)
-{
-        (void) pin;
-
-	return (0);		// not supported on Pi, consider https://www.adafruit.com/product/1083
-}
 
 static void mvLog (const char *from, const char *to)
 {
@@ -389,6 +345,7 @@ static void usage (const char *errfmt, ...)
             fprintf (stderr, "        changeUTC configurations exit newde newdx reboot restart setup shutdown unlock upgrade\n");
 
             fprintf (stderr, " -q   : ignore saved startup screen location and size\n");
+            fprintf (stderr, " -D   : enable verbose logging\n");
             fprintf (stderr, " -r p : set read-only live web server port to p or -1 to disable; default %d\n",
                                     LIVEWEB_RO_PORT);
             fprintf (stderr, " -s d : start time as if UTC now is d formatted as YYYY-MM-DDTHH:MM:SS\n");
@@ -542,6 +499,9 @@ static void crackArgs (int ac, char *av[])
                 case 'q':
                     ignore_x11geom = true;
                     break;
+                case 'D':
+                    verbose_logging = true;
+                    break;
                 case 'r':
                     if (ac < 2)
                         usage ("missing R/O web port number for -r");
@@ -666,67 +626,11 @@ int main (int ac, char *av[])
         // this loop by itself would run 100% CPU so offer a means to be a better citizen and throttle back
         printf ("Starting Arduino loop()\n");
 
-        if (max_cpu_usage == 1) {
+	// call Arduino loop forever
+        printf ("Starting Arduino loop()\n");
 
-            // pure loop
-            for (;;)
-                loop();
-
-        } else {
-
-            // init performance metrics in order to throttle usage
-            int cpu_us = 0, et_us = 0;      // cpu and elapsed time
-            int sleep_us = 100;             // initial sleep, usecs
-            const int sleep_dt = 10;        // sleep adjustment, usecs
-            const int max_sleep = 50000;    // max sleep each loop, usecs
-
-            #define TVUSEC(tv0,tv1) (((tv1).tv_sec-(tv0).tv_sec)*1000000 + ((tv1).tv_usec-(tv0).tv_usec))
-
-            for (;;) {
-
-                // get time and usage before calling loop()
-                struct rusage ru0;
-                getrusage (RUSAGE_SELF, &ru0);
-                struct timeval tv0;
-                gettimeofday (&tv0, NULL);
-
-                // Ardino loop
-                loop();
-
-                // cap cpu usage by sleeping controlled by a simple integral controller
-                if (cpu_us > et_us*max_cpu_usage) {
-                    // back off
-                    if (sleep_us < max_sleep)
-                        sleep_us += sleep_dt;
-                } else {
-                    // more!
-                    if (sleep_us < sleep_dt)
-                        sleep_us = 0;
-                    else
-                        sleep_us -= sleep_dt;
-                }
-                if (sleep_us > 0)
-                    usleep (sleep_us);
-
-                // get time and usage after running loop() and our usleep
-                struct rusage ru1;
-                getrusage (RUSAGE_SELF, &ru1);
-                struct timeval tv1;
-                gettimeofday (&tv1, NULL);
-
-                // find cpu time used
-                struct timeval &ut0 = ru0.ru_utime;
-                struct timeval &ut1 = ru1.ru_utime;
-                struct timeval &st0 = ru0.ru_stime;
-                struct timeval &st1 = ru1.ru_stime;
-                int ut_us = TVUSEC(ut0,ut1);
-                int st_us = TVUSEC(st0,st1);
-                cpu_us = ut_us + st_us;
-
-                // find elapsed time
-                et_us = TVUSEC(tv0,tv1);
-
-                // printf ("sleep_us= %10d cpu= %10d et= %10d %g\n", sleep_us, cpu_us, et_us, fmin(100,100.0*cpu_us/et_us));
-            }
+        for (;;) {
+            loop();
+            usleep(40000); // 40ms sleep to reduce CPU usage
         }
 }

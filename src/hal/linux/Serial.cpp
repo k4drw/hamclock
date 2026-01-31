@@ -63,9 +63,36 @@ void Serial::println (int i)
     printf ("%d\n", i);
 }
 
+#define _GNU_SOURCE
+#include <string.h>
+
+extern bool verbose_logging;
+
 int Serial::printf (const char *fmt, ...)
 {
     pthread_mutex_lock (&serial_lock);
+
+    // format the message first to check content
+    char buf[2048];
+    va_list ap;
+    va_start (ap, fmt);
+    int n = vsnprintf (buf, sizeof(buf), fmt, ap);
+    va_end (ap);
+
+    // default to QUIET (suppress logs).
+    // if verbose_logging is set, print everything.
+    // otherwise, only print if error/fail/fatal/panic
+    if (!verbose_logging) {
+        bool keep = false;
+        if (strcasestr(buf, "error") || strcasestr(buf, "fail") || 
+            strcasestr(buf, "fatal") || strcasestr(buf, "panic"))
+            keep = true;
+        
+        if (!keep) {
+            pthread_mutex_unlock (&serial_lock);
+            return n;
+        }
+    }
 
     // prefix with millis()
     // N.B. don't call now() because getNTPUTC calls print which can get recursive
@@ -73,10 +100,7 @@ int Serial::printf (const char *fmt, ...)
     fprintf (stdout, "%7u.%03u ", m/1000, m%1000);
 
     // now the message
-    va_list ap;
-    va_start (ap, fmt);
-    int n = vprintf (fmt, ap);
-    va_end (ap);
+    fputs (buf, stdout);
     fflush (stdout);
 
     pthread_mutex_unlock (&serial_lock);

@@ -1,0 +1,38 @@
+#!/bin/bash
+# Pre-commit hook to update cities2.txt if it is older than 30 days.
+
+DB_FILE="data/cities2.txt"
+SCRIPT="scripts/update_cities.py"
+
+# Ensure script is executable
+chmod +x "$SCRIPT"
+
+DO_UPDATE=0
+
+if [ ! -f "$DB_FILE" ]; then
+    echo "[CityDB] Database missing. Updating..."
+    DO_UPDATE=1
+else
+    # Check if file is older than 30 days (2592000 seconds)
+    NOW=$(date +%s)
+    MTIME=$(date +%s -r "$DB_FILE")
+    AGE=$((NOW - MTIME))
+    
+    if [ $AGE -gt 2592000 ]; then
+        echo "[CityDB] Database is older than 30 days. Updating..."
+        DO_UPDATE=1
+    fi
+fi
+
+if [ "$DO_UPDATE" -eq 1 ]; then
+    $SCRIPT
+    if [ $? -eq 0 ]; then
+        echo "[CityDB] Update successful. Adding to commit."
+        git add "$DB_FILE"
+    else
+        echo "[CityDB] Update failed. Proceeding with old data."
+        # Do not fail the commit, just warn.
+    fi
+fi
+
+exit 0
