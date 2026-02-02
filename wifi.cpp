@@ -1818,8 +1818,8 @@ static bool updateAurora (const SBox &box)
             // plot
             char aurora_label[30];
             snprintf (aurora_label, sizeof(aurora_label), "%.0f", a.percent[a.n_points-1]);
-            plotXYstr (box, a.age_hrs, a.percent, a.n_points, "Hours", "HPI (GW)",
-                                        AURORA_COLOR, 0, 0, aurora_label);
+            plotXYstr (box, a.age_hrs, a.percent, a.n_points, "Hours", "Aurora Chances, max %",
+                                        AURORA_COLOR, 0, 100, aurora_label);
         }
 
         // update NCDXF box either way

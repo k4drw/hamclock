@@ -3118,8 +3118,8 @@ extern void drawDigit (const SBox &b, int digit, uint16_t lt, uint16_t bg, uint1
 // aurora info
 #define AURORA_INTERVAL         (1700)                  // interval, seconds
 #define AURORA_COLOR            RGB565(100,200,150)     // plot color
-#define AURORA_MAXPTS           (48)                    // every 30 minutes for 24 hours
-#define AURORA_MAXAGE           (24.0F)                 // max age to plot, hours
+#define AURORA_MAXPTS           (150)                   // every 30 minutes for 3 days
+#define AURORA_MAXAGE           (72.0F)                 // max age to plot, hours
 #define AURORA_AUTOMAP_ON       50.0F                   // automap on threshold, percent
 #define AURORA_AUTOMAP_OFF      25.0F                   // automap off threshold, percent
 
