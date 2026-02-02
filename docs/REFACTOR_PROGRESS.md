@@ -20,7 +20,9 @@ The following features no longer use the proxy. They connect directly to the pri
 | **X-Ray Flux** | `/xray/xray.txt` | **NOAA SWPC** (`xrays-1-day.json`) | ✅ Complete |
 | **Contests** | `/contests/...` | **WA7BNM / Google** (Direct iCal feed) | ✅ Complete |
 | **Satellites** | `/esats/esats.txt` | **CelesTrak** (HTTPS) | ✅ Complete (Native libcurl) |
-| **Aurora (Stats)** | `/aurora/aurora.txt` | **NOAA HPI** (GW) | ✅ Complete (Native libcurl + Auto-scale) |
+| **Aurora (Stats)** | `/aurora/aurora.txt` | **NOAA Ovation** (JSON) | ✅ Complete (Native libcurl + Max Grid %) |
+| **WSPR Spots** | `/fetchWSPR.pl` | **wspr.live** (SQL API) | ✅ Complete (Direct SQL, native JSON) |
+| **DRAP (Stats)** | `/drap/stats.txt` | **NOAA Global** (Text) | ✅ Complete (Native libcurl + Max Grid Freq) |
 
 ## 2. Infrastructure Improvements
 *   **Native HTTPS**: Integrated `libcurl` to handle all external data fetches directly in C++, removing reliance on `system("wget")`.
@@ -35,9 +37,8 @@ The following items still rely on the proxy. They are prioritized for the next s
 
 | Feature | Proxy Path | Notes / Complexity | Priority |
 | :--- | :--- | :--- | :--- |
-| **DRAP Stats** | `/drap/stats.txt` | **Medium**. Direct fetch from NOAA (`drap_global.txt`) is possible, but NOAA only provides a *current snapshot*. Replicating the 24h history graph requires local history implementation. | Medium |
+
 | **DRAP Map** | `/maps/...DRAP.bmp` | **Hard**. Currently downloads pre-rendered map images. Switching to direct requires implementing a local Map Generator (Text Grid -> Pixel Projection). | Phase 2 |
-| **WSPR Spots** | `/fetchWSPR.pl` | **Low**. WSPRnet provides a JSON API. Refactor `pskreporter.cpp` to parse native JSON. | High |
 | **PSKReporter** | `/fetchPSK...` | **Medium**. Source is proper XML. Requires implementing XML parsing logic in C++ to replace Proxy's format conversion. | Medium |
 | **RBN Spots** | `/fetchRBN.pl` | **High**. Source is Telnet Stream. Requires writing a complex Telnet client with stream filtering to replace the Proxy's aggregation logic. | Phase 2 |
 | **VOACAP** | `/fetchVOACAP...` | **Very Hard**. Server-side Fortran engine. Moving client-side requires porting VOACAP or using a public API (scarce). | Phase 3 |
@@ -60,7 +61,8 @@ The following items still rely on the proxy. They are prioritized for the next s
     *   **Timestamps**: NOAA JSONs use inconsistent formats. Some use `YYYY-MM-DD HH:MM:SS`, others `YYYY-MM-DDTHH:MM:SSZ`. The parser in `spacewx.cpp` (`parse_noaa_json_time`) uses `%*c` to handle both separators.
 *   **Data Quirks:**
     *   **BzBt**: The `mag-1-day.json` file header can be misleading. We confirmed via testing that **Bt (Total Field)** is at index **6** (not 4).
-    *   **Aurora**: We switched from "Aurora Chances" (%) to "Hemispheric Power Index" (GW). The graph now **auto-scales** (0-max) instead of fixed 0-100.
+    *   **Aurora**: We switched to **NOAA Ovation** JSON grid. Since this source provides a probability grid (0-100%) but no history, we calculate the **Maximum Probability** in the grid and maintain a local history cache. We also added file persistence (`aurora_history.txt`) to restore the graph after a restart. This restores the "%" unit used in the original HamClock.
+    *   **DRAP**: Similar to Aurora, we now fetch the **NOAA Global D-Region Absorption Prediction** text file (`drap_global_frequencies.txt`). This file provides a snapshot of absorption frequencies across a lat/lon grid. We parse this to find the global **Maximum Frequency**, and since it lacks history, we maintain a local history cache with file persistence (`drap_history.txt`).
 *   **Network:**
     *   **Libcurl**: We replaced `system("wget...")` with a native `curlDownload` wrapper (in `src/hal/linux/System.cpp`) linking against `libcurl`. This provides robust HTTPS, timeout control, and error logging. Do not revert to `WiFiClientSecure` for these external fetches without verifying TLS compatibility.
 

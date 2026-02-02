@@ -10,7 +10,7 @@ These endpoints connect to `backend_host` (default: `clearskyinstitute.com:80`).
 | ~~**Weather**~~ | ~~`/wx.pl`~~ | ~~OpenWeatherMap / NWS~~ | ~~Strips JSON, hides API keys, formats as key=value text.~~ |
 | **Grid Wx** | `/worldwx/wx.txt` | Global Models (GFS?) | Generates global weather grid for map overlay. |
 | ~~**Satellites**~~ | ~~`/esats/esats.txt`~~ | ~~CelesTrak / Space-Track~~ | ~~Filters massive TLE lists; formats names; pre-selects ham sats.~~ |
-| **Space Wx** | `/drap/stats.txt` | NOAA SWPC | Formats DRAP (D-Region Absorption) data. |
+| ~~**Space Wx**~~ | ~~`/drap/stats.txt`~~ | ~~NOAA SWPC~~ | ~~Formats DRAP (D-Region Absorption) data.~~ |
 | ~~**Space Wx**~~ | ~~`/Bz/Bz.txt`~~ | ~~NOAA SWPC~~ | ~~Formats Bz/Bt magnetic field data.~~ |
 | ~~**Space Wx**~~ | ~~`/solar-wind/swind-24hr.txt`~~ | ~~NOAA SWPC~~ | ~~Formats solar wind speed/density.~~ |
 | ~~**Space Wx**~~ | ~~`/ssn/ssn-31.txt`~~ | ~~NOAA / SIDC~~ | ~~Sunspot numbers.~~ |
@@ -21,7 +21,7 @@ These endpoints connect to `backend_host` (default: `clearskyinstitute.com:80`).
 | **Propagation** | `/fetchVOACAPArea.pl` | VOACAP (Engine) | Runs VOACAP Area prediction; returns map overlay. |
 | **Map Images** | `/maps/*.z` | Static Storage | Serves pre-compressed RGB565 bitmaps for background maps. |
 | **Digimodes** | `/fetchPSKReporter.pl` | PSKReporter.info | Filters massive XML feed by Grid/Call; returns CSV. |
-| **Digimodes** | `/fetchWSPR.pl` | WSPRnet.org | Filters WSPR database spots. |
+| ~~**Digimodes**~~ | ~~`/fetchWSPR.pl`~~ | ~~WSPRnet.org~~ | ~~Filters WSPR database spots.~~ |
 | **Digimodes** | `/fetchRBN.pl` | Reverse Beacon Network | Filters RBN telnet/database spots. |
 | ~~**Contests**~~ | ~~`/contests/contests311.txt`~~ | ~~ContestCalendar.com~~ | ~~Scrapes HTML/Calendar; formats as simple list.~~ |
 | ~~**Geolocation**~~ | ~~`/fetchIPGeoloc.pl`~~ | ~~IP-API / MaxMind~~ | ~~IP-to-Lat/Lon/Grid lookup.~~ |
@@ -41,7 +41,9 @@ These features connect directly to the source and should continue working.
 | **Weather** | `api.open-meteo.com` | JSON Forecast API (Free, No Key). |
 | **City Data** | Local / GeoNames | Bundled `cities2.txt` (Self-updating). |
 | **Satellites** | `celestrak.org` | HTTPS GP TLE Feed (Amateur Group) (via libcurl). |
-| **Aurora** | `noaa.gov` | HPI (GW) Power Feed (Text) (via libcurl). |
+| **WSPR Spots** | `db1.wspr.live` | Direct SQL via HTTP (ClickHouse DB) (via libcurl). |
+| **Aurora** | `noaa.gov` | Ovation Aurora Forecast (JSON Grid) (via libcurl). |
+| **DRAP Stats** | `noaa.gov` | Global D-Region Absorption (Text Grid) (via libcurl). |
 | **SFI Data** | `noaa.gov` | JSON 10cm Flux History (30-day) (via libcurl). |
 | **Kp Data** | `noaa.gov` | JSON Planetary K-index Forecast/History (via libcurl). |
 | **SSN Data** | `noaa.gov` | Daily Solar Indices (Text) (via libcurl). |
