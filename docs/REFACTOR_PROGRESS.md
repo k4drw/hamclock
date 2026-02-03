@@ -1,6 +1,6 @@
 # HamClock Refactoring Progress Report
 
-**Date:** 2026-01-31
+**Date:** 2026-02-03
 **Objective:** Remove dependencies on the ClearSky Institute proxy server (`clearskyinstitute.com`) before its scheduled shutdown in June 2026.
 **Strategy:** Replace proxied data fetches with direct API calls to source providers (NOAA, Open-Meteo, etc.) or internal logic.
 
@@ -21,8 +21,12 @@ The following features no longer use the proxy. They connect directly to the pri
 | **Contests** | `/contests/...` | **WA7BNM / Google** (Direct iCal feed) | ✅ Complete |
 | **Satellites** | `/esats/esats.txt` | **CelesTrak** (HTTPS) | ✅ Complete (Native libcurl) |
 | **Aurora (Stats)** | `/aurora/aurora.txt` | **NOAA Ovation** (JSON) | ✅ Complete (Native libcurl + Max Grid %) |
-| **WSPR Spots** | `/fetchWSPR.pl` | **wspr.live** (SQL API) | ✅ Complete (Direct SQL, native JSON) |
+| **WSPR Spots** | `/fetchWSPR.pl` | **wspr.live** (SQL API) | ✅ Complete (Direct SQL, native CSV parsing) |
 | **DRAP (Stats)** | `/drap/stats.txt` | **NOAA Global** (Text) | ✅ Complete (Native libcurl + Max Grid Freq) |
+| **PSKReporter** | `/fetchPSK...` | **retrieve.pskreporter.info** (XML) | ✅ Complete (Native XML parsing) |
+| **RBN Spots** | `/fetchRBN.pl` | **telnet.reversebeacon.net** (Telnet) | ✅ Complete (Native Telnet Client) |
+| **RSS Feeds** | `/RSS/web15rss.pl` | **arnewsline.org**, **hamweekly.com**, **ng3k.com** | ✅ Complete (Native Parsing) |
+
 
 ## 2. Infrastructure Improvements
 *   **Native HTTPS**: Integrated `libcurl` to handle all external data fetches directly in C++, removing reliance on `system("wget")`.
@@ -39,9 +43,14 @@ The following items still rely on the proxy. They are prioritized for the next s
 | :--- | :--- | :--- | :--- |
 
 | **DRAP Map** | `/maps/...DRAP.bmp` | **Hard**. Currently downloads pre-rendered map images. Switching to direct requires implementing a local Map Generator (Text Grid -> Pixel Projection). | Phase 2 |
-| **PSKReporter** | `/fetchPSK...` | **Medium**. Source is proper XML. Requires implementing XML parsing logic in C++ to replace Proxy's format conversion. | Medium |
-| **RBN Spots** | `/fetchRBN.pl` | **High**. Source is Telnet Stream. Requires writing a complex Telnet client with stream filtering to replace the Proxy's aggregation logic. | Phase 2 |
+| **PSKReporter** | `/fetchPSK...` | **retrieve.pskreporter.info** (XML) | ✅ Complete (Native XML parsing) |
+| **RBN Spots** | `/fetchRBN.pl` | **telnet.reversebeacon.net** (Telnet) | ✅ Complete (Native Telnet Client) |
 | **VOACAP** | `/fetchVOACAP...` | **Very Hard**. Server-side Fortran engine. Moving client-side requires porting VOACAP or using a public API (scarce). | Phase 3 |
+
+| **On The Air** | `/ONTA/onta.txt` | **Medium**. Requires finding original source API (likely partial aggregation). | Pending |
+| **Band Conditions** | `/fetchBandConditions.pl` | **Very Hard**. Part of VOACAP ecosystem. | Phase 3 |
+| **DX Peditions** | `/dxpeds/dxpeditions.txt` | **Easy/Medium**. Needs source identification (NG3K? ClubLog?). | Pending |
+
 
 ## 4. Verification Steps
 1.  **Build**: `sudo make install` (installs binary and `cities2.txt`).
@@ -65,6 +74,7 @@ The following items still rely on the proxy. They are prioritized for the next s
     *   **DRAP**: Similar to Aurora, we now fetch the **NOAA Global D-Region Absorption Prediction** text file (`drap_global_frequencies.txt`). This file provides a snapshot of absorption frequencies across a lat/lon grid. We parse this to find the global **Maximum Frequency**, and since it lacks history, we maintain a local history cache with file persistence (`drap_history.txt`).
 *   **Network:**
     *   **Libcurl**: We replaced `system("wget...")` with a native `curlDownload` wrapper (in `src/hal/linux/System.cpp`) linking against `libcurl`. This provides robust HTTPS, timeout control, and error logging. Do not revert to `WiFiClientSecure` for these external fetches without verifying TLS compatibility.
+    *   **URL Encoding**: WSPR queries require strict URL encoding (e.g., `%20` for spaces, `%27` for quotes). We added `urlencode.h` to handle this robustly, replacing manual loops.
 
 ## 6. Next Steps
 *   Tackle **DRAP** and **Map Overlays** (Phase 2).

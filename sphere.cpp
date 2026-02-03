@@ -1,10 +1,7 @@
 /* a few handy spherical trig functions.
  */
 
-
 #include "HamClock.h"
-
-
 
 /* solve a spherical triangle:
  *           A
@@ -21,20 +18,18 @@
  * N.B. we pass in cos(c) and sin(c) because in many problems one of the sides
  *   remains constant for many values of A and b.
  */
-void solveSphere (float A, float b, float cc, float sc, float *cap, float *Bp)
-{
-        float cb = cosf(b);
-        float sb = sinf(b);
-        float cA = cosf(A);
-        float ca = CLAMPF (cb*cc + sb*sc*cA, -1, 1);
+void solveSphere(float A, float b, float cc, float sc, float* cap, float* Bp) {
+    float cb = cosf(b);
+    float sb = sinf(b);
+    float cA = cosf(A);
+    float ca = CLAMPF(cb * cc + sb * sc * cA, -1, 1);
 
-        if (cap)
-            *cap = ca;
+    if (cap) *cap = ca;
 
-        if (Bp) {
-            float sA = sinf(A);
-            float y = sA*sb*sc;
-            float x = cb - ca*cc;
-            *Bp = atan2f (y,x);
-        }
+    if (Bp) {
+        float sA = sinf(A);
+        float y = sA * sb * sc;
+        float x = cb - ca * cc;
+        *Bp = atan2f(y, x);
+    }
 }

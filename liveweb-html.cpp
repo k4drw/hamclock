@@ -6,9 +6,9 @@
 
 #include "HamClock.h"
 
-#if defined (_IS_UNIX)
+#if defined(_IS_UNIX)
 
-char live_html[] =  R"_raw_html_(
+char live_html[] = R"_raw_html_(
 <!DOCTYPE html>
 <html>
 

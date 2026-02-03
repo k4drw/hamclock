@@ -4,43 +4,32 @@
 #include "Arduino.h"
 
 class ESP {
+   public:
+    ESP();
 
-    public:
+    void wdtDisable(void) {
+        // noop
+    }
 
-        ESP();
+    void wdtFeed(void) {
+        // noop
+    }
 
-	void wdtDisable(void)
-	{
-            // noop
-	}
+    uint32_t getFreeHeap(void) { return (0); }
 
-	void wdtFeed(void)
-	{
-            // noop
-	}
+    int checkFlashCRC() { return (1); }
 
-	uint32_t getFreeHeap(void) 
-        {
-            return (0);
-        }
+    void restart(bool minus_K, bool minus_0);
 
-        int checkFlashCRC()
-        {
-            return (1);
-        }
+    uint32_t getChipId(void);
 
-        void restart (bool minus_K, bool minus_0);
-
-        uint32_t getChipId(void);
-
-    private:
-
-        void addArgv (char **&argv, int &argc, const char *arg);
-        uint32_t sn;
+   private:
+    void addArgv(char**& argv, int& argc, const char* arg);
+    uint32_t sn;
 };
 
 extern class ESP ESP;
 
 extern void yield(void);
 
-#endif // _ESP_H
+#endif  // _ESP_H

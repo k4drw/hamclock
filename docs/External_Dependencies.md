@@ -20,12 +20,18 @@ These endpoints connect to `backend_host` (default: `clearskyinstitute.com:80`).
 | **Propagation** | `/fetchVOACAP-TOA.pl` | VOACAP (Engine) | Runs VOACAP prediction; returns map overlay. |
 | **Propagation** | `/fetchVOACAPArea.pl` | VOACAP (Engine) | Runs VOACAP Area prediction; returns map overlay. |
 | **Map Images** | `/maps/*.z` | Static Storage | Serves pre-compressed RGB565 bitmaps for background maps. |
-| **Digimodes** | `/fetchPSKReporter.pl` | PSKReporter.info | Filters massive XML feed by Grid/Call; returns CSV. |
 | ~~**Digimodes**~~ | ~~`/fetchWSPR.pl`~~ | ~~WSPRnet.org~~ | ~~Filters WSPR database spots.~~ |
-| **Digimodes** | `/fetchRBN.pl` | Reverse Beacon Network | Filters RBN telnet/database spots. |
+| ~~**Digimodes**~~ | ~~`/fetchRBN.pl`~~ | ~~Reverse Beacon Network~~ | ~~Filters RBN telnet/database spots.~~ |
 | ~~**Contests**~~ | ~~`/contests/contests311.txt`~~ | ~~ContestCalendar.com~~ | ~~Scrapes HTML/Calendar; formats as simple list.~~ |
 | ~~**Geolocation**~~ | ~~`/fetchIPGeoloc.pl`~~ | ~~IP-API / MaxMind~~ | ~~IP-to-Lat/Lon/Grid lookup.~~ |
 | **Updates** | `/ham/HamClock/ESPHamClock.zip` | Local Build System | binary software updates. |
+
+| ~~**RSS Feeds** | `/RSS/web15rss.pl` | RSS Feed Titles |
+
+| **On The Air** | `/ONTA/onta.txt` | ONTA Aggregator | Aggregates spots from SOTA, POTA, etc. |
+| **Band Conditions** | `/fetchBandConditions.pl` | VOACAP (Engine) | Runs VOACAP for Band Conditions pane. |
+| **DX Peditions** | `/dxpeds/dxpeditions.txt` | DX Pedition Calendar | Aggregates active/upcoming DX Peditions. |
+
 
 ## Direct Connect Dependencies (Safe)
 These features connect directly to the source and should continue working.
@@ -41,12 +47,19 @@ These features connect directly to the source and should continue working.
 | **Weather** | `api.open-meteo.com` | JSON Forecast API (Free, No Key). |
 | **City Data** | Local / GeoNames | Bundled `cities2.txt` (Self-updating). |
 | **Satellites** | `celestrak.org` | HTTPS GP TLE Feed (Amateur Group) (via libcurl). |
-| **WSPR Spots** | `db1.wspr.live` | Direct SQL via HTTP (ClickHouse DB) (via libcurl). |
+| **WSPR Spots** | `db1.wspr.live` | Direct SQL via HTTP (ClickHouse DB) (via native HTTP). |
 | **Aurora** | `noaa.gov` | Ovation Aurora Forecast (JSON Grid) (via libcurl). |
 | **DRAP Stats** | `noaa.gov` | Global D-Region Absorption (Text Grid) (via libcurl). |
 | **SFI Data** | `noaa.gov` | JSON 10cm Flux History (30-day) (via libcurl). |
 | **Kp Data** | `noaa.gov` | JSON Planetary K-index Forecast/History (via libcurl). |
+| **DST Data** | `noaa.gov` | JSON Kyoto DST index (via libcurl). |
+| **Space Wx Scales** | `noaa.gov` | JSON NOAA Space Weather Scales (R, S, G) (via libcurl). |
+| **Rank Coefficients** | N/A | Hardcoded static values (no fetch required). |
 | **SSN Data** | `noaa.gov` | Daily Solar Indices (Text) (via libcurl). |
 | **Solar Wind** | `noaa.gov` | JSON Plasma/Magnetic Data (1-day) (via libcurl). |
-
+| **PSKReporter** | `retrieve.pskreporter.info` | Direct XML Fetch via HTTPS (libcurl) |
+| **RBN Spots** | `telnet.reversebeacon.net` | Direct Telnet Stream (Port 7000) |
+| **RSS - ARNewsLine** | `arnewsline.org` | RSS Feed (HTML Parsing) |
+| **RSS - HamWeekly** | `daily.hamweekly.com` | Atom Feed (XML Parsing) |
+| **RSS - NG3K** | `ng3k.com` | DX Headlines (HTML Parsing) |
 

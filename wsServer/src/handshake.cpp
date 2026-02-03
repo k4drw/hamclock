@@ -44,31 +44,28 @@
  * @attention This is part of the internal API and is documented just
  * for completeness.
  */
-int get_handshake_accept(char *wsKey, unsigned char **dest)
-{
-	unsigned char hash[SHA1HashSize]; /* SHA-1 Hash.                   */
-	SHA1Context ctx;                  /* SHA-1 Context.                */
-	char *str;                        /* WebSocket key + magic string. */
+int get_handshake_accept(char* wsKey, unsigned char** dest) {
+    unsigned char hash[SHA1HashSize]; /* SHA-1 Hash.                   */
+    SHA1Context ctx;                  /* SHA-1 Context.                */
+    char* str;                        /* WebSocket key + magic string. */
 
-	/* Invalid key. */
-	if (!wsKey)
-		return (-1);
+    /* Invalid key. */
+    if (!wsKey) return (-1);
 
-	str = (char *) calloc(1, sizeof(char) * (WS_KEY_LEN + WS_MS_LEN + 1));
-	if (!str)
-		return (-1);
+    str = (char*)calloc(1, sizeof(char) * (WS_KEY_LEN + WS_MS_LEN + 1));
+    if (!str) return (-1);
 
-	strncpy(str, wsKey, WS_KEY_LEN);
-	strcat(str, MAGIC_STRING);
+    strncpy(str, wsKey, WS_KEY_LEN);
+    strcat(str, MAGIC_STRING);
 
-	SHA1Reset(&ctx);
-	SHA1Input(&ctx, (const uint8_t *)str, WS_KEYMS_LEN);
-	SHA1Result(&ctx, hash);
+    SHA1Reset(&ctx);
+    SHA1Input(&ctx, (const uint8_t*)str, WS_KEYMS_LEN);
+    SHA1Result(&ctx, hash);
 
-	*dest = base64_encode(hash, SHA1HashSize, NULL);
-	*(*dest + strlen((const char *)*dest) - 1) = '\0';
-	free(str);
-	return (0);
+    *dest = base64_encode(hash, SHA1HashSize, NULL);
+    *(*dest + strlen((const char*)*dest) - 1) = '\0';
+    free(str);
+    return (0);
 }
 
 /**
@@ -84,43 +81,36 @@ int get_handshake_accept(char *wsKey, unsigned char **dest)
  * @attention This is part of the internal API and is documented just
  * for completeness.
  */
-int get_handshake_response(char *hsrequest, char **hsresponse)
-{
-	unsigned char *accept; /* Accept message.     */
-	char *saveptr;         /* strtok_r() pointer. */
-	char *s;               /* Current string.     */
-	int ret;               /* Return value.       */
+int get_handshake_response(char* hsrequest, char** hsresponse) {
+    unsigned char* accept; /* Accept message.     */
+    char* saveptr;         /* strtok_r() pointer. */
+    char* s;               /* Current string.     */
+    int ret;               /* Return value.       */
 
-	saveptr = NULL;
-	for (s = strtok_r(hsrequest, "\r\n", &saveptr); s != NULL;
-		 s = strtok_r(NULL, "\r\n", &saveptr))
-	{
-                // from HamClock:
-                extern const char *strcistr (const char *haystack, const char *needle);
-		if (strcistr(s, WS_HS_REQ) != NULL)
-			break;
-	}
+    saveptr = NULL;
+    for (s = strtok_r(hsrequest, "\r\n", &saveptr); s != NULL; s = strtok_r(NULL, "\r\n", &saveptr)) {
+        // from HamClock:
+        extern const char* strcistr(const char* haystack, const char* needle);
+        if (strcistr(s, WS_HS_REQ) != NULL) break;
+    }
 
-	/* Ensure that we have a valid pointer. */
-	if (s == NULL)
-		return (-1);
+    /* Ensure that we have a valid pointer. */
+    if (s == NULL) return (-1);
 
-	saveptr = NULL;
-	s       = strtok_r(s, " ", &saveptr);
-	s       = strtok_r(NULL, " ", &saveptr);
+    saveptr = NULL;
+    s = strtok_r(s, " ", &saveptr);
+    s = strtok_r(NULL, " ", &saveptr);
 
-	ret = get_handshake_accept(s, &accept);
-	if (ret < 0)
-		return (ret);
+    ret = get_handshake_accept(s, &accept);
+    if (ret < 0) return (ret);
 
-	*hsresponse = (char *) malloc(sizeof(char) * WS_HS_ACCLEN);
-	if (*hsresponse == NULL)
-		return (-1);
+    *hsresponse = (char*)malloc(sizeof(char) * WS_HS_ACCLEN);
+    if (*hsresponse == NULL) return (-1);
 
-	strcpy(*hsresponse, WS_HS_ACCEPT);
-	strcat(*hsresponse, (const char *)accept);
-	strcat(*hsresponse, "\r\n\r\n");
+    strcpy(*hsresponse, WS_HS_ACCEPT);
+    strcat(*hsresponse, (const char*)accept);
+    strcat(*hsresponse, "\r\n\r\n");
 
-	free(accept);
-	return (0);
+    free(accept);
+    return (0);
 }

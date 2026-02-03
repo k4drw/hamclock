@@ -10,7 +10,6 @@
 
 #include "HamClock.h"
 
-
 #define A_0 (0.1122522F)
 #define A_1 (0.1890084F)
 #define A_2 (-0.1721879F)
@@ -28,107 +27,94 @@
 
 #define D_0 (0.4678F)
 
-
-
 /* given lat [-90,90] return plot Y position [-1,1]
  */
-static float RobLat2Y (const float lat_d)
-{
+static float RobLat2Y(const float lat_d) {
     const float y = fabsf(lat_d) / 90;
-    const float yy = y*y;
-    float Y = y + y*(1-yy) * (((A_3*yy + A_2)*yy + A_1)*yy + A_0);
-    if (lat_d < 0)
-        Y = -Y;
+    const float yy = y * y;
+    float Y = y + y * (1 - yy) * (((A_3 * yy + A_2) * yy + A_1) * yy + A_0);
+    if (lat_d < 0) Y = -Y;
     return (Y);
 }
 
 /* given lat [-90,90] return lng scale facter G [0.5322,1]
  * useful elsewhere for finding globe width.
  */
-float RobLat2G (const float lat_d)
-{
+float RobLat2G(const float lat_d) {
     const float y = fabsf(lat_d) / 90;
-    const float yy = y*y;
-    return (1 - D_0*yy + yy*(1-yy) * (((B_3*yy + B_2)*yy + B_1)*yy + B_0));
+    const float yy = y * y;
+    return (1 - D_0 * yy + yy * (1 - yy) * (((B_3 * yy + B_2) * yy + B_1) * yy + B_0));
 }
 
 /* given plot Y position [-1,1] return lat [-90,90]
  */
-static float RobY2Lat (const float Y)
-{
-    const float YY = Y*Y;
+static float RobY2Lat(const float Y) {
+    const float YY = Y * Y;
     const float Yabs = fabsf(Y);
-    float y = Yabs + Yabs*(1-YY) * (((C_3*YY + C_2)*YY + C_1)*YY + C_0);
-    if (Y < 0)
-        y = -y;
-    return (90*y);
+    float y = Yabs + Yabs * (1 - YY) * (((C_3 * YY + C_2) * YY + C_1) * YY + C_0);
+    if (Y < 0) y = -y;
+    return (90 * y);
 }
 
 /* convert ll to map_b screen coords at the given pixel scale factor.
  * avoid globe edge by at least the given number of raw pixels.
  */
-void ll2sRobinson (const LatLong &ll, SCoord &s, int edge, int scalesz)
-{
+void ll2sRobinson(const LatLong& ll, SCoord& s, int edge, int scalesz) {
     // handy half-sizes and center pix
-    uint16_t hw = map_b.w/2;
-    uint16_t hh = map_b.h/2;
+    uint16_t hw = map_b.w / 2;
+    uint16_t hh = map_b.h / 2;
     uint16_t xc = map_b.x + hw;
     uint16_t yc = map_b.y + hh;
 
     // find Robinson Y and X scale at this lat
-    float Y = RobLat2Y (ll.lat_d);
-    float G = RobLat2G (ll.lat_d);
-    float hw_lat = hw * G;                                      // halfwidth at this lat
+    float Y = RobLat2Y(ll.lat_d);
+    float G = RobLat2G(ll.lat_d);
+    float hw_lat = hw * G;  // halfwidth at this lat
 
     // pixels from map center
-    float deg_pan = 360.0F*pan_zoom.pan_x/map_b.w;
-    float lng0_d = fmodf (ll.lng_d - getCenterLng() - deg_pan + 7*180, 2*180) - 180; // [-180,180]
-    float dx = hw * G * lng0_d / 180;                           // pixels right of center
-    float dy = hh * Y;                                          // pixels up from center
+    float deg_pan = 360.0F * pan_zoom.pan_x / map_b.w;
+    float lng0_d = fmodf(ll.lng_d - getCenterLng() - deg_pan + 7 * 180, 2 * 180) - 180;  // [-180,180]
+    float dx = hw * G * lng0_d / 180;                                                    // pixels right of center
+    float dy = hh * Y;                                                                   // pixels up from center
 
     // project edge away from rob curve at this lat
-    float edge_lat = edge/cosf(0.8F*ll.lat)+2;                    // vert at lat=0, 70 at lat=90 + extra
+    float edge_lat = edge / cosf(0.8F * ll.lat) + 2;  // vert at lat=0, 70 at lat=90 + extra
 
     // convert to scaled screen coords, insuring within edge
-    s.x = CLAMPF (roundf (scalesz*(xc + dx)), scalesz*(xc-hw_lat)+edge_lat, scalesz*(xc+hw_lat)-edge_lat);
-    s.y = CLAMPF (roundf (scalesz*(yc - dy)), scalesz*(yc-hh)+edge, scalesz*(yc+hh)-edge);
+    s.x = CLAMPF(roundf(scalesz * (xc + dx)), scalesz * (xc - hw_lat) + edge_lat, scalesz * (xc + hw_lat) - edge_lat);
+    s.y = CLAMPF(roundf(scalesz * (yc - dy)), scalesz * (yc - hh) + edge, scalesz * (yc + hh) - edge);
 }
 
 /* convert map_b screen coords to ll.
  * return whether coord really is over the globe.
  */
-bool s2llRobinson (const SCoord &s, LatLong &ll)
-{
+bool s2llRobinson(const SCoord& s, LatLong& ll) {
     // handy half-sizes
-    float hw = map_b.w/2.0F;
-    float hh = map_b.h/2.0F;
+    float hw = map_b.w / 2.0F;
+    float hh = map_b.h / 2.0F;
 
     // pixels from map center
-    float dx = s.x - (map_b.x + hw);                            // +right
-    float dy = (map_b.y + hh) - s.y;                            // +up
+    float dx = s.x - (map_b.x + hw);  // +right
+    float dy = (map_b.y + hh) - s.y;  // +up
 
     // find lat from Robinson Y
-    ll.lat_d = RobY2Lat (dy/hh);
+    ll.lat_d = RobY2Lat(dy / hh);
 
     // find Robinson X scale at this lat thence lng
-    float G = RobLat2G (ll.lat_d);
-    ll.lng_d = 180*dx/(hw*G);
+    float G = RobLat2G(ll.lat_d);
+    ll.lng_d = 180 * dx / (hw * G);
 
     // check bounds before adjustments
-    bool ok = fabsf (ll.lat_d) <= 90 && fabsf (ll.lng_d) <= 180;
+    bool ok = fabsf(ll.lat_d) <= 90 && fabsf(ll.lng_d) <= 180;
 
     // adjust to pan and center lng, rely on normalizeLL to handle wrap
-    ll.lng_d += 360.0F*pan_zoom.pan_x/map_b.w;
-    if (core_map != CM_USER)
-        ll.lng_d += getCenterLng();
+    ll.lng_d += 360.0F * pan_zoom.pan_x / map_b.w;
+    if (core_map != CM_USER) ll.lng_d += getCenterLng();
     ll.normalize();
 
     // ok?
     return (ok);
 }
-
-
-
 
 #if defined(_UNIT_TEST)
 
@@ -139,26 +125,20 @@ bool s2llRobinson (const SCoord &s, LatLong &ll)
 SBox map_b;
 PanZoom pan_zoom;
 
-void fatalError (const char *fmt, ...)
-{
+void fatalError(const char* fmt, ...) {
     char msg[2000];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf (msg, sizeof(msg), fmt, ap);
+    vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
 
-    printf ("Fatal: %s\n", msg);
+    printf("Fatal: %s\n", msg);
     exit(1);
 }
 
-int16_t getCenterLng()
-{
-    return (-90);
-}
+int16_t getCenterLng() { return (-90); }
 
-
-int main (int ac, char *av[]) 
-{
+int main(int ac, char* av[]) {
     map_b.x = 140;
     map_b.y = 150;
     map_b.w = 660;
@@ -172,13 +152,13 @@ int main (int ac, char *av[])
         for (uint16_t x = map_b.x; x < map_b.x + map_b.w; x++) {
             SCoord s = {x, y};
             LatLong ll;
-            if (s2llRobinson (s, ll)) {
+            if (s2llRobinson(s, ll)) {
                 SCoord s2;
-                ll2sRobinson (ll, s2, 0, 1);
+                ll2sRobinson(ll, s2, 0, 1);
                 int x_err = (int)s.x - (int)s2.x;
                 int y_err = (int)s.y - (int)s2.y;
                 if (abs(x_err) > 1 || abs(y_err) > 1)
-                    printf ("y= %4d x= %4d y2= %4d x2= %4d dy= %4d dx= %4d\n", y, x, s2.y, s2.x, y_err, x_err);
+                    printf("y= %4d x= %4d y2= %4d x2= %4d dy= %4d dx= %4d\n", y, x, s2.y, s2.x, y_err, x_err);
             }
         }
     }

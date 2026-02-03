@@ -3,8 +3,7 @@
 
 #include "HamClock.h"
 
-void selectFontStyle (FontWeight w, FontSize s)
-{
+void selectFontStyle(FontWeight w, FontSize s) {
     if (s == SMALL_FONT) {
         if (w == BOLD_FONT)
             tft.setFont(&Germano_Bold16pt7b);
@@ -19,9 +18,8 @@ void selectFontStyle (FontWeight w, FontSize s)
 
 /* get current font without having to know internal names
  */
-void getFontStyle (FontWeight *wp, FontSize *sp)
-{
-    const GFXfont *f = tft.getFont();
+void getFontStyle(FontWeight* wp, FontSize* sp) {
+    const GFXfont* f = tft.getFont();
 
     if (f == &Germano_Bold16pt7b) {
         *wp = BOLD_FONT;
