@@ -18,10 +18,11 @@
 #define DEF_CPU_USAGE 0.8F
 static float max_cpu_usage = DEF_CPU_USAGE;
 
-char **our_argv;     // our argv for restarting
-std::string our_dir; // our storage directory, including trailing /
-bool rm_eeprom;      // set by -0 to rm eeprom to restore defaults
-bool ignore_x11geom; // set by -q to ignore startup loc and size
+char **our_argv;      // our argv for restarting
+std::string our_dir;  // our storage directory, including trailing /
+bool rm_eeprom;       // set by -0 to rm eeprom to restore defaults
+bool ignore_x11geom;  // set by -q to ignore startup loc and size
+bool verbose_logging; // set by -D to enable verbose logs
 
 // list of diagnostic files, newest first
 const char *diag_files[N_DIAG_FILES] = {
@@ -375,6 +376,7 @@ static void usage(const char *errfmt, ...) {
     fprintf(stderr, "        changeUTC configurations exit newde newdx reboot "
                     "restart setup shutdown unlock upgrade\n");
 
+    fprintf(stderr, " -D   : enable verbose logging\n");
     fprintf(stderr, " -q   : ignore saved startup screen location and size\n");
     fprintf(stderr,
             " -r p : set read-only live web server port to p or -1 to disable; "
@@ -533,6 +535,9 @@ static void crackArgs(int ac, char *av[]) {
         break;
       case 'q':
         ignore_x11geom = true;
+        break;
+      case 'D':
+        verbose_logging = true;
         break;
       case 'r':
         if (ac < 2)
