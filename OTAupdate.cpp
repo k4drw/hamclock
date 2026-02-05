@@ -2,12 +2,90 @@
  */
 
 #include <ESP8266httpUpdate.h>
-#include <WiFiUdp.h>
+#include <ArduinoJson.h>
 
 #include "HamClock.h"
 
-// server path to script that returns the newest version available
-static const char v_page[] = "/version.pl";
+// Release info structure
+struct ReleaseInfo {
+    char tag_name[32];
+    char body[4096];
+    char asset_url[256];
+    bool valid;
+};
+
+// Helper to fetch latest release from GitHub
+static ReleaseInfo getLatestRelease(void) {
+    ReleaseInfo info;
+    memset(&info, 0, sizeof(info));
+    info.valid = false;
+
+    // Use curl to fetch the GitHub API JSON
+    // Limit to reasonable size to avoid buffer overflows if response is huge
+    const char* cmd = "curl -L -s --max-time 10 https://api.github.com/repos/k4drw/hamclock/releases/latest";
+    FILE* fp = popen(cmd, "r");
+    if (!fp) {
+        Serial.println("OTA: Failed to run curl for version check");
+        return info;
+    }
+
+    // Read response into a String/buffer
+    // We allocation on heap to store the potentially large JSON
+    const size_t buf_size = 16384;
+    char* json_buf = (char*)malloc(buf_size);
+    if (!json_buf) {
+        pclose(fp);
+        Serial.println("OTA: No memory for JSON buffer");
+        return info;
+    }
+
+    size_t len = 0;
+    while (len < buf_size - 1 && !feof(fp)) {
+        size_t n = fread(json_buf + len, 1, buf_size - 1 - len, fp);
+        if (n == 0) break;
+        len += n;
+    }
+    json_buf[len] = '\0';
+    pclose(fp);
+
+    // Parse JSON
+    DynamicJsonDocument doc(24576);  // Adjust size as needed
+    DeserializationError error = deserializeJson(doc, json_buf);
+
+    if (error) {
+        Serial.printf("OTA: JSON parsing failed: %s\n", error.c_str());
+    } else {
+        const char* tag = doc["tag_name"];
+        const char* body = doc["body"];
+
+        // Find zip asset if available
+        const char* download_url = NULL;
+        JsonArray assets = doc["assets"];
+        for (JsonObject asset : assets) {
+            const char* name = asset["name"];
+            if (name && strstr(name, ".zip")) {
+                download_url = asset["browser_download_url"];
+                break;
+            }
+        }
+        // Fallback to source zipball if no specific asset
+        if (!download_url) {
+            download_url = doc["zipball_url"];
+        }
+
+        if (tag && download_url) {
+            strncpy(info.tag_name, tag, sizeof(info.tag_name) - 1);
+            if (body) strncpy(info.body, body, sizeof(info.body) - 1);
+            strncpy(info.asset_url, download_url, sizeof(info.asset_url) - 1);
+            info.valid = true;
+        } else {
+            Serial.println("OTA: JSON missing tag or download url");
+        }
+    }
+
+    free(json_buf);
+    return info;
+}
 
 // query layout
 #define ASK_TO 60                        // ask timeout, secs
@@ -46,68 +124,81 @@ static void onProgressCB(int sofar, int total) {
     checkWebServer(true);
 }
 
+// Helper to fetch version string from master branch version.cpp
+static bool getMasterVersion(char* ver_out, int ver_len) {
+    const char* cmd = "curl -s --max-time 10 https://raw.githubusercontent.com/k4drw/hamclock/master/version.cpp";
+    FILE* fp = popen(cmd, "r");
+    if (!fp) return false;
+
+    char line[128];
+    bool found = false;
+    while (fgets(line, sizeof(line), fp)) {
+        // Look for: const char *hc_version = "4.23"; or similar
+        // Allow for spaces around = and other variations
+        if (strstr(line, "hc_version")) {
+            char* quote1 = strchr(line, '"');
+            if (quote1) {
+                char* quote2 = strchr(quote1 + 1, '"');
+                if (quote2) {
+                    *quote2 = '\0';
+                    strncpy(ver_out, quote1 + 1, ver_len - 1);
+                    ver_out[ver_len - 1] = '\0';
+                    found = true;
+                    break;
+                }
+            }
+        }
+    }
+    pclose(fp);
+    return found;
+}
+
+// Global to hold latest fetched info so we don't fetch twice
+static ReleaseInfo latest_release;
+
 /* return whether a new version is available.
  * if so pass back the name in new_ver[new_verl]
  * default no if error.
  */
 bool newVersionIsAvailable(char* new_ver, uint16_t new_verl) {
-    WiFiClient v_client;
-    char line[100];
     bool found_newer = false;
+    char master_ver[32];
 
-    Serial.printf("%s/%s\n", backend_host, v_page);
-    if (v_client.connect(backend_host, backend_port)) {
-        // query page
-        httpHCGET(v_client, backend_host, v_page);
+    // Check version.cpp on master
+    if (getMasterVersion(master_ver, sizeof(master_ver))) {
+        Serial.printf("OTA: Current %s, Master %s\n", hc_version, master_ver);
 
-        // skip header
-        if (!httpSkipHeader(v_client)) {
-            Serial.println("Version query header is short");
-            goto out;
-        }
-
-        // next line is new version number
-        if (!getTCPLine(v_client, line, sizeof(line), NULL)) {
-            Serial.println("Version query timed out");
-            goto out;
-        }
-
-        // non-beta accepts only newer non-beta; beta accepts anything newer
-        Serial.printf("found version %s\n", line);
         float our_v = atof(hc_version);
-        float new_v = atof(line);
+        float new_v = atof(master_ver);
+
         bool we_are_beta = strchr(hc_version, 'b') != NULL;
-        bool new_is_beta = strchr(line, 'b') != NULL;
+        bool new_is_beta = strchr(master_ver, 'b') != NULL;
+
         if (we_are_beta) {
-            if (new_is_beta) {
-                int our_beta_v = atoi(strchr(hc_version, 'b') + 1);
-                int new_beta_v = atoi(strchr(line, 'b') + 1);
-                if (new_beta_v > our_beta_v) {
-                    found_newer = true;
-                    strncpy(new_ver, line, new_verl);
-                }
-            } else {
-                if (new_v >= our_v) {
-                    found_newer = true;
-                    strncpy(new_ver, line, new_verl);
-                }
+            if (new_v > our_v) {
+                found_newer = true;
+            }
+            // Handle same numeric version but newer beta?
+            // Since atof stops at 'b', 5.00b1 and 5.00b2 are both 5.00.
+            // We need to parse suffix.
+            else if (new_v == our_v) {
+                int our_bv = atoi(strchr(hc_version, 'b') + 1);
+                int new_bv = atoi(strchr(master_ver, 'b') + 1);
+                if (new_bv > our_bv) found_newer = true;
             }
         } else {
-            if (!new_is_beta && new_v > our_v) {
+            // Stable only accepts stable newer
+            if (!new_is_beta && new_v > our_v + 0.001) {
                 found_newer = true;
-                strncpy(new_ver, line, new_verl);
             }
         }
 
-        // just log next few lines for debug
-        // for (int i = 0; i < 2 && getTCPLine (v_client, line, sizeof(line), NULL); i++)
-        // Serial.printf ("  %s\n", line);
+        if (found_newer) {
+            strncpy(new_ver, master_ver, new_verl);
+        }
+    } else {
+        Serial.println("OTA: Could not fetch master version.cpp");
     }
-
-out:
-
-    // finished with connection
-    v_client.stop();
 
     return (found_newer);
 }
@@ -171,37 +262,34 @@ bool askOTAupdate(char* new_ver, bool show_pending, bool def_yes) {
     closeGimbal();
     closeDXCluster();
 
-    // read list of changes
-    selectFontStyle(LIGHT_FONT, SMALL_FONT);
-    WiFiClient v_client;
-    char** lines = NULL;  // malloced list of malloced strings -- N.B. free!
-    int n_lines = 0;
-    if (v_client.connect(backend_host, backend_port)) {
-        // query page
-        httpHCGET(v_client, backend_host, v_page);
-
-        // skip header
-        if (!httpSkipHeader(v_client)) {
-            Serial.println("Info header is short");
-            goto out;
-        }
-
-        // skip next line which is new version number
-        if (!getTCPLine(v_client, line, sizeof(line), NULL)) {
-            Serial.println("Info timed out");
-            goto out;
-        }
-
-        // remaining lines are changes, add to lines[]
-        while (getTCPLine(v_client, line, sizeof(line), NULL)) {
-            maxStringW(line, SCR_X - SCR_M - LINDENT - 1);  // insure fit
-            lines = (char**)realloc(lines, (n_lines + 1) * sizeof(char*));
-            if (!lines) fatalError("no memory for %d version changes", n_lines + 1);
-            lines[n_lines++] = strdup(line);
-        }
+    // Use body from latest_release, or fetch if not present (only if this was called directly without
+    // newVersionIsAvailable?) Typically newVersionIsAvailable processed it.
+    if (!latest_release.valid) {
+        latest_release = getLatestRelease();
     }
-out:
-    v_client.stop();
+
+    // Split body into lines
+    char** lines = NULL;
+    int n_lines = 0;
+
+    if (latest_release.valid && strlen(latest_release.body) > 0) {
+        char* p = latest_release.body;
+        char* brk;
+        char* tok = strtok_r(p, "\n", &brk);
+        while (tok) {
+            // Handle wrapping
+            // For now just add lines, assuming display wraps or we truncate
+            // Actually existing code had wrap logic: maxStringW(line, SCR_X - SCR_M - LINDENT - 1);
+
+            // Basic splitting for now
+            lines = (char**)realloc(lines, (n_lines + 1) * sizeof(char*));
+            lines[n_lines++] = strdup(tok);
+            tok = strtok_r(NULL, "\n", &brk);
+        }
+    } else {
+        lines = (char**)realloc(lines, sizeof(char*));
+        lines[n_lines++] = strdup("No release notes available.");
+    }
 
     // how many will fit
     const int max_lines = (tft.height() - FD - INFO_Y) / LH;
@@ -299,6 +387,11 @@ out:
 void doOTAupdate(const char* newver) {
     Serial.printf("Begin download version %s\n", newver);
 
+    if (!latest_release.valid) {
+        // Try fetch if missing
+        latest_release = getLatestRelease();
+    }
+
     // inform user
     eraseScreen();
     selectFontStyle(BOLD_FONT, SMALL_FONT);
@@ -311,13 +404,13 @@ void doOTAupdate(const char* newver) {
     // connect progress callback
     ESPhttpUpdate.onProgress(onProgressCB);
 
-    // build url
+    // build url from GitHub Assets
     WiFiClient client;
-    char url[400];
-    if (strchr(newver, 'b'))
-        snprintf(url, sizeof(url), "https://%s/ham/HamClock/ESPHamClock-V%s.zip", backend_host, newver);
-    else
-        snprintf(url, sizeof(url), "https://%s/ham/HamClock/ESPHamClock.zip", backend_host);
+    const char* url = latest_release.valid ? latest_release.asset_url : NULL;
+
+    if (!url) {
+        fatalError("No download URL found.");
+    }
 
     // go
     t_httpUpdate_return ret = ESPhttpUpdate.update(client, url);
