@@ -35,6 +35,7 @@ The following features no longer use the proxy. They connect directly to the pri
 *   **Installation**: Updated `Makefile` to install `cities2.txt` to `/usr/local/share/hamclock/`.
 *   **Self-Healing Cache**: Refactored `cachefile.cpp` to seed the cache from the bundled `cities2.txt` if the download fails (protecting new installs against proxy shutdown).
 *   **Bug Fixes**: Fixed core dumps related to null/missing JSON fields in NOAA data.
+*   **OTA Updates**: Transitioned OTA update mechanism to use GitHub Releases. The check logic was split into a lightweight polling of `version.cpp` on the master branch, and a full API query for release notes and assets when the user initiates an update.
 
 ## 3. Pending / Remaining Proxy Dependencies
 The following items still rely on the proxy. They are prioritized for the next session.
@@ -87,9 +88,13 @@ The following items still rely on the proxy. They are prioritized for the next s
     *   **Storage**: Cached in `dxpeditions.txt` in the user data directory.
 *   **World Weather Grid:**
     *   **Native Generation**: The logic to generate the global weather grid (`wx.txt`) has been ported to C++ in `wx.cpp`. It fetches current data for a grid of points from **Open-Meteo**, replacing the need for a backend script or the prototype `gen_wx_grid.py`.
+*   **OTA Updates:**
+    *   **Versioning**: HamClock now checks `https://raw.githubusercontent.com/k4drw/hamclock/master/version.cpp` for the latest version string. This is a lightweight check to avoid hitting GitHub API rate limits on every poll.
+    *   **Release Notes**: If a new version is detected, the full update process fetches `https://api.github.com/repos/k4drw/hamclock/releases/latest` to retrieve the release body (changelog) and the asset download URL.
+    *   **Dynamic Unzip**: The update process no longer assumes the zip file matches the internal directory name. It unzips the release asset and dynamically detects the created directory (e.g., `hamclock-4.23`).
 
 ## 6. Next Steps
 *   **Phase 2**: Tackle **VOACAP** replacement (likely requires local computation or new API).
 *   **Phase 2**: Address **Static Map Assets** and **Weather Map** backgrounds.
-*   **Phase 3**: Finalize **Updates / Diags** which inherently rely on a central server.
+*   **Phase 3**: ✅ Finalize **Updates / Diags** which inherently rely on a central server.
 *   **Push master branch to GitHub.**

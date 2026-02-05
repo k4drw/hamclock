@@ -8,7 +8,7 @@ These endpoints connect to `backend_host` (default: `clearskyinstitute.com:80`).
 | Feature | Endpoint Path | Original Source (Speculated) | Purpose of Proxy |
 | :--- | :--- | :--- | :--- |
 | ~~**Weather**~~ | ~~`/wx.pl`~~ | ~~OpenWeatherMap / NWS~~ | ~~Strips JSON, hides API keys, formats as key=value text.~~ |
-| **Grid Wx** | `/worldwx/wx.txt` | Global Models (GFS?) | Generates global weather grid for map overlay. |
+| ~~**Grid Wx**~~ | ~~`/worldwx/wx.txt`~~ | ~~Global Models (GFS?)~~ | ~~Generates global weather grid for map overlay.~~ |
 | ~~**Satellites**~~ | ~~`/esats/esats.txt`~~ | ~~CelesTrak / Space-Track~~ | ~~Filters massive TLE lists; formats names; pre-selects ham sats.~~ |
 | ~~**Space Wx**~~ | ~~`/drap/stats.txt`~~ | ~~NOAA SWPC~~ | ~~Formats DRAP (D-Region Absorption) data.~~ |
 | ~~**Space Wx**~~ | ~~`/Bz/Bz.txt`~~ | ~~NOAA SWPC~~ | ~~Formats Bz/Bt magnetic field data.~~ |
@@ -24,7 +24,7 @@ These endpoints connect to `backend_host` (default: `clearskyinstitute.com:80`).
 | ~~**Digimodes**~~ | ~~`/fetchRBN.pl`~~ | ~~Reverse Beacon Network~~ | ~~Filters RBN telnet/database spots.~~ |
 | ~~**Contests**~~ | ~~`/contests/contests311.txt`~~ | ~~ContestCalendar.com~~ | ~~Scrapes HTML/Calendar; formats as simple list.~~ |
 | ~~**Geolocation**~~ | ~~`/fetchIPGeoloc.pl`~~ | ~~IP-API / MaxMind~~ | ~~IP-to-Lat/Lon/Grid lookup.~~ |
-| **Updates** | `/ham/HamClock/ESPHamClock.zip` | Local Build System | binary software updates. |
+| ~~**Updates**~~ | ~~`/ham/HamClock/ESPHamClock.zip`~~ | ~~Local Build System~~ | ~~source software updates.~~ |
 
 | ~~**RSS Feeds** | `/RSS/web15rss.pl` | RSS Feed Titles |
 
@@ -62,4 +62,4 @@ These features connect directly to the source and should continue working.
 | **RSS - ARNewsLine** | `arnewsline.org` | RSS Feed (HTML Parsing) |
 | **RSS - HamWeekly** | `daily.hamweekly.com` | Atom Feed (XML Parsing) |
 | **RSS - NG3K** | `ng3k.com` | DX Headlines (HTML Parsing) |
-
+| **OTA Updates** | `api.github.com` | GitHub Releases API (releases/latest) + `raw.github.../version.cpp` |
