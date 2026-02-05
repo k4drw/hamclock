@@ -47,13 +47,16 @@ To see all options, run hamclock with any illegal option such as -help.
 .RS 5
 .TP 10
 -b h
-set backend host to h; default is clearskyinstitute.com
+set backend host:port to h; default is clearskyinstitute.com:80
 .TP
 -c
 disable all touch events from web interface
 .TP
 -d d
 set working directory to d; default is $HOME/.hamclock/
+.TP
+-D
+enable verbose logging
 .TP
 -e p
 set RESTful web server port to p; default is 8080
@@ -80,13 +83,12 @@ set Mercator or Mollweide center longitude to l degrees, +E; requires -k
 enable demo mode
 .TP
 -o  
-write diagnostic log to stdout instead of in /Users/ecdowney/.hamclock/
+write diagnostic log to stdout instead of in $HOME/.hamclock/
 .TP
--s d
+-q
+ignore saved startup screen location and size
+.TP
 start time as if UTC now is d formatted as YYYY-MM-DDTHH:MM:SS
-.TP
--t p
-throttle max cpu to p percent; default is 80
 .TP
 -v
 show version info then exit

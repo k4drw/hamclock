@@ -14,10 +14,6 @@
 
 #include "Arduino.h"
 
-// max cpu usage, throttle with -t
-#define DEF_CPU_USAGE 0.8F
-static float max_cpu_usage = DEF_CPU_USAGE;
-
 char **our_argv;      // our argv for restarting
 std::string our_dir;  // our storage directory, including trailing /
 bool rm_eeprom;       // set by -0 to rm eeprom to restore defaults
@@ -384,8 +380,6 @@ static void usage(const char *errfmt, ...) {
             LIVEWEB_RO_PORT);
     fprintf(stderr, " -s d : start time as if UTC now is d formatted as "
                     "YYYY-MM-DDTHH:MM:SS\n");
-    fprintf(stderr, " -t p : throttle max cpu to p percent; default is %.0f\n",
-            DEF_CPU_USAGE * 100);
     fprintf(stderr, " -v   : show version info then exit\n");
     fprintf(stderr,
             " -w p : set read-write live web server port to p or -1 to "
@@ -549,14 +543,6 @@ static void crackArgs(int ac, char *av[]) {
         if (ac < 2)
           usage("missing date/time for -s");
         setUsrDateTime(*++av);
-        ac--;
-        break;
-      case 't':
-        if (ac < 2)
-          usage("missing percentage for -t");
-        max_cpu_usage = atoi(*++av) / 100.0F;
-        if (max_cpu_usage < 0.1F || max_cpu_usage > 1)
-          usage("-t percentage must be [10,100]");
         ac--;
         break;
       case 'v':
