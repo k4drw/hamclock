@@ -64,44 +64,130 @@ static void loadSDOChoice(void) {
     }
 }
 
-/* download and inflate the given sdo file name and save.
+#include "stb_image.h"
+#include "stb_image_resize2.h"
+
+/* download via NASA SDO and process to local BMP.
  * return whether ok.
  */
 static bool retrieveSDO(const char* fn, const char* save_fn) {
-    char url[1000];
-    snprintf(url, sizeof(url), "/SDO/%s.z", fn);
+    // deduce ID and size from fn
+    // "f_211_193_171_340.bmp" -> 211193171, 340
+    // "latest_340_HMIB.bmp" -> HMIB, 340
+    // "f_131_340.bmp" -> 0131, 340
 
-    WiFiClient client;
-    bool ok = false;
+    char id[32];
+    int size = 0;
+    bool found = false;
 
-    Serial.println(url);
-    if (client.connect(backend_host, backend_port)) {
-        updateClocks(false);
-
-        // query web page
-        httpHCGET(client, backend_host, url);
-
-        // collect content length from header
-        char cl_str[100];
-        if (!httpSkipHeader(client, "Content-Length: ", cl_str, sizeof(cl_str))) goto out;
-        int cl = atol(cl_str);
-
-        // create local with effective ownership
-        FILE* fp = fopen(save_fn, "w");
-        if (!fp) goto out;
-        if (fchown(fileno(fp), getuid(), getgid()) < 0)  // log but don't worry about it
-            Serial.printf("chown(%s,%d,%d): %s\n", save_fn, getuid(), getgid(), strerror(errno));
-
-        // inflate and copy to local
-        ok = zinfWiFiFILE(client, cl, fp);
-
-        // finished with fp
-        fclose(fp);
+    if (strncmp(fn, "f_", 2) == 0) {
+        // format f_..._SIZE.bmp
+        const char* last_underscore = strrchr(fn, '_');
+        if (last_underscore) {
+            size = atoi(last_underscore + 1);
+            int len = last_underscore - (fn + 2);
+            if (len < (int)sizeof(id)) {
+                strncpy(id, fn + 2, len);
+                id[len] = 0;
+                // remove underscores for 211_193_171 -> 211193171
+                char* dst = id;
+                for (char* src = id; *src; src++) {
+                    if (*src != '_') *dst++ = *src;
+                }
+                *dst = 0;
+                // Pad small IDs with 0: 131 -> 0131
+                if (strlen(id) == 3) {
+                    char tmp[5];
+                    snprintf(tmp, sizeof(tmp), "0%s", id);
+                    strcpy(id, tmp);
+                }
+                found = true;
+            }
+        }
+    } else if (strncmp(fn, "latest_", 7) == 0) {
+        // format latest_SIZE_ID.bmp
+        const char* first_underscore = strchr(fn, '_');
+        if (first_underscore) {
+            size = atoi(first_underscore + 1);
+            const char* second_underscore = strchr(first_underscore + 1, '_');
+            if (second_underscore) {
+                const char* dot = strchr(second_underscore, '.');
+                if (dot) {
+                    int len = dot - (second_underscore + 1);
+                    if (len > 0 && len < (int)sizeof(id)) {
+                        strncpy(id, second_underscore + 1, len);
+                        id[len] = 0;
+                        found = true;
+                    }
+                }
+            }
+        }
     }
 
-out:
-    client.stop();
-    return (ok);
+    if (!found || size == 0) {
+        Serial.printf("SDO: parse failed for %s\n", fn);
+        return false;
+    }
+
+    // construct NASA URL
+    // https://sdo.gsfc.nasa.gov/assets/img/latest/latest_1024_0211.jpg
+    char url[256];
+    snprintf(url, sizeof(url), "https://sdo.gsfc.nasa.gov/assets/img/latest/latest_1024_%s.jpg", id);
+    const char* tmp_jpg = "/tmp/sdo_temp.jpg";
+
+    Serial.printf("SDO: Downloading %s\n", url);
+    updateClocks(false);
+
+    if (!curlDownload(url, tmp_jpg)) {
+        Serial.printf("SDO: Download failed\n");
+        return false;
+    }
+
+    // Process Image
+    bool ok = false;
+    int w, h, n;
+    unsigned char* jpg_data = stbi_load(tmp_jpg, &w, &h, &n, 3);  // force 3 channels
+    if (jpg_data) {
+        if (w >= size && h >= size) {
+            // Resize to size x size.
+            // SDO images are square.
+            // Target is square "size".
+            unsigned char* resized_data = (unsigned char*)malloc(size * size * 3);
+            if (resized_data) {
+                stbir_resize_uint8_linear(jpg_data, w, h, 0, resized_data, size, size, 0, STBIR_RGB);
+
+                // Convert to RGB565
+                uint16_t* pix565 = (uint16_t*)malloc(size * size * 2);
+                if (pix565) {
+                    for (int i = 0; i < size * size; i++) {
+                        uint8_t r = resized_data[i * 3 + 0];
+                        uint8_t g = resized_data[i * 3 + 1];
+                        uint8_t b = resized_data[i * 3 + 2];
+                        pix565[i] = RGB565(r, g, b);
+                    }
+
+                    // Write BMP
+                    Message ynot;
+                    // Use fn (relative) because writeBMP565File uses fopenOurs which prepends our_dir
+                    if (writeBMP565File(fn, pix565, size, size, ynot)) {
+                        ok = true;
+                    } else {
+                        Serial.printf("SDO: writeBMP failed: %s\n", ynot.get());
+                    }
+                    free(pix565);
+                }
+                free(resized_data);
+            }
+        } else {
+            Serial.printf("SDO: Image too small %dx%d < %d\n", w, h, size);
+        }
+        stbi_image_free(jpg_data);
+    } else {
+        Serial.printf("SDO: Decode failed\n");
+    }
+
+    unlink(tmp_jpg);
+    return ok;
 }
 
 /* render sdo_choice, downloading fresh if not found or stale.

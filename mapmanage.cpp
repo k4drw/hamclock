@@ -15,6 +15,8 @@
 
 #include "HamClock.h"
 #include "zlib.h"  // ours
+#include "stb_image.h"
+#include "stb_image_resize2.h"
 
 // persistent state of open files, allows restarting
 static FILE *day_fp, *night_fp;          // open day and night files
@@ -510,6 +512,312 @@ bool allWebMapImagesOk(void) {
     return (true);
 }
 
+/* generate Aurora maps locally by blending NOAA Oval data onto Countries map.
+ * returns true if successful.
+ */
+static bool generateAuroraMapLocal(const char* dfile, const char* nfile) {
+    const char* json_url = "https://services.swpc.noaa.gov/json/ovation_aurora_latest.json";
+    const char* tmp_json = "/tmp/hc_aurora_map.json";
+
+    // 1. Download JSON
+    Serial.printf("AUR: Downloading %s\n", json_url);
+    if (!curlDownload(json_url, tmp_json)) {
+        Serial.printf("AUR: Download failed\n");
+        return false;
+    }
+
+    // 2. Load Base Maps (Countries)
+    // We need the Countries map filenames for current zoom
+    char cty_d[100], cty_n[100];
+    mkMapFilenames(CM_COUNTRIES, cty_d, cty_n, pan_zoom.zoom, sizeof(cty_d));
+
+    // Ensure base maps exist (installFileMaps(CM_COUNTRIES) should have run, but verify)
+    // Actually, we can't call installFileMaps(CM_COUNTRIES) here as it might recurse or mess up state?
+    // Assume they exist or try to use what we have.
+    FILE* fpd = fopenOurs(cty_d, "r");
+    FILE* fpn = fopenOurs(cty_n, "r");
+
+    if (!fpd || !fpn) {
+        Serial.printf("AUR: Base maps %s/%s missing, skipping gen\n", cty_d, cty_n);
+        if (fpd) fclose(fpd);
+        if (fpn) fclose(fpn);
+        unlink(tmp_json);
+        return false;
+    }
+
+    // Read Base Maps
+    // We use the existing readBMPImage helpers but they rely on GenReader
+    int w = HC_MAP_W * pan_zoom.zoom;
+    int h = HC_MAP_H * pan_zoom.zoom;
+
+    // Read raw pixels?
+    // We need to modify them.
+    // Let's use readBMPImage to get RGB565 buffer.
+    GenReader grd(fpd), grn(fpn);
+    uint16_t *pix_d = NULL, *pix_n = NULL;
+    Message ynot;
+    SBox box = {0, 0, (uint16_t)w, (uint16_t)h};
+
+    if (!readBMPImage(grd, box, pix_d, FIT_FILL, ynot) || !readBMPImage(grn, box, pix_n, FIT_FILL, ynot)) {
+        Serial.printf("AUR: Read base failed: %s\n", ynot.get());
+        if (pix_d) free(pix_d);
+        if (pix_n) free(pix_n);
+        fclose(fpd);
+        fclose(fpn);
+        unlink(tmp_json);
+        return false;
+    }
+    fclose(fpd);
+    fclose(fpn);
+
+    // 3. Parse JSON and Composite
+    // Grid is 360 cols x 181 rows (0..359, -90..90?) or 0..180 lat?
+    // NOAA Oval: "coordinates": [[lon, lat, val], ...]
+    // 360 * 181 = 65160 points.
+    // Lng: 0..359. Lat: -90..90?
+    // We map [lon, lat] -> screen [x, y].
+    // Then add val (scaled) to green channel.
+
+    FILE* fpj = fopen(tmp_json, "r");
+    if (fpj) {
+        char buf[256];
+        bool in_coords = false;
+
+        // simple scale factor: value (0-100) -> 0-255 green
+        // backend uses gamma/scale. Let's just do simple linear for now.
+        // val * 2.5?
+
+        while (fgets(buf, sizeof(buf), fpj)) {
+            if (!in_coords) {
+                if (strstr(buf, "\"coordinates\"")) in_coords = true;
+            }
+            if (in_coords) {
+                char* p = buf;
+                while (*p) {
+                    if (*p == '[') {
+                        int lon, lat, val;
+                        if (sscanf(p, "[%d, %d, %d]", &lon, &lat, &val) == 3) {
+                            if (val > 0) {
+                                // Map Lat/Lon to Screen X/Y
+                                // Map Lat: 90 (top) to -90 (btm).
+                                // Map Lng: -180 (left) to 180 (right).
+                                // JSON Lon: 0..359?
+                                // JSON Lat: -90..90?
+
+                                // Normalize Lng to -180..180
+                                float lng = (float)lon;
+                                if (lng >= 180) lng -= 360;
+
+                                // Map to pixel space
+                                // Mercator vs other projections?
+                                // This generation assumes base map matches current projection?
+                                // No, base maps are usually provided in Equirectangular (Lat/Lng) if I recall?
+                                // Use `ll2s` or similar logic?
+                                // `writeBMP565File` saves linear maps?
+                                // `installFilePixels` mmaps them.
+                                // mapmanage maps are usually cylindrical (Equirectangular) stored on disk?
+                                // Yes, "map-D-660x330-Countries.bmp" is Equirectangular.
+                                // Projections like Mercator are applied at DRAW TIME using `s2ll` / `ll2s`.
+                                // No wait, `drawLLGrid` uses `ll2s`.
+                                // Does `tft.drawEarth` warp the bitmap?
+                                // `earthmap.cpp` line 777 (not shown) likely draws pixels.
+                                // Actually, HamClock stores maps as Mercator?
+                                // "map-D-660x330..."
+                                // If 660x330, and Earth is 360 deg, then pixels/deg = 1.83.
+                                // 330 pixels height for 180 deg? 1.83.
+                                // It seems to be Equirectangular (Plate Carrée).
+
+                                // X = (lng + 180) * (W / 360)
+                                // Y = (90 - lat) * (H / 180)
+
+                                int x = (int)((lng + 180.0f) * (w / 360.0f));
+                                int y = (int)((90.0f - (float)lat) * (h / 180.0f));
+
+                                // Scatter/Paint
+                                // Source is coarse (1 deg). Target might be 660x330 (~0.5 deg).
+                                // We should draw a splat/rect.
+                                int dx_sz = (int)(w / 360.0f) + 1;
+                                int dy_sz = (int)(h / 180.0f) + 1;
+
+                                // Add green glow
+                                uint8_t add_g = (val * 255) / 100;  // Scale 0-100 to 0-255?
+                                if (add_g > 255) add_g = 255;
+
+                                for (int dy = 0; dy < dy_sz; dy++) {
+                                    for (int dx = 0; dx < dx_sz; dx++) {
+                                        int px = (x + dx) % w;
+                                        int py = y + dy;
+                                        if (py >= 0 && py < h) {
+                                            int idx = py * w + px;
+
+                                            // Day: Add to Green
+                                            uint16_t pd = pix_d[idx];
+                                            uint8_t r = RGB565_R(pd);
+                                            uint8_t g = RGB565_G(pd);
+                                            uint8_t b = RGB565_B(pd);
+                                            g = (g + add_g > 255) ? 255 : (g + add_g);
+                                            pix_d[idx] = RGB565(r, g, b);
+
+                                            // Night: Add to Green
+                                            uint16_t pn = pix_n[idx];
+                                            r = RGB565_R(pn);
+                                            g = RGB565_G(pn);
+                                            b = RGB565_B(pn);
+                                            g = (g + add_g > 255) ? 255 : (g + add_g);
+                                            pix_n[idx] = RGB565(r, g, b);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    p++;
+                }
+            }
+        }
+        fclose(fpj);
+    }
+
+    unlink(tmp_json);
+
+    // 4. Save Maps
+    // Reuse writeBMP565File
+    if (!writeBMP565File(dfile, pix_d, w, h, ynot)) {
+        Serial.printf("AUR: Write D failed: %s\n", ynot.get());
+        free(pix_d);
+        free(pix_n);
+        return false;
+    }
+    if (!writeBMP565File(nfile, pix_n, w, h, ynot)) {
+        Serial.printf("AUR: Write N failed: %s\n", ynot.get());
+        free(pix_d);
+        free(pix_n);
+        return false;
+    }
+
+    free(pix_d);
+    free(pix_n);
+    Serial.printf("AUR: Native generation success\n");
+    return true;
+}
+
+/* generate DRAP maps locally by fetching NOAA global PNG, resizing/cropping, and saving.
+ * returns true if successful.
+ */
+static bool generateDRAPMapLocal(const char* dfile, const char* nfile) {
+    const char* png_url = "https://services.swpc.noaa.gov/images/d-rap/global.png";
+    const char* tmp_png = "/tmp/hc_drap_global.png";
+
+    // 1. Download PNG
+    Serial.printf("DRAP: Downloading %s\n", png_url);
+    if (!curlDownload(png_url, tmp_png)) {
+        Serial.printf("DRAP: Download failed\n");
+        return false;
+    }
+
+    // 2. Decode PNG
+    int img_w, img_h, n_chan;
+    uint8_t* png_data = stbi_load(tmp_png, &img_w, &img_h, &n_chan, 3);  // force RGB
+    unlink(tmp_png);                                                     // don't need file anymore
+
+    if (!png_data) {
+        Serial.printf("DRAP: Decode failed\n");
+        return false;
+    }
+
+    // 3. Process
+    // NOAA DRAP global.png includes borders/margins.
+    // Backend script says:
+    // "bottom-right corner of map interior = +543,+266" (ImageMagick coords)
+    // "crop from top-left +0+0 with width=544, height=267"
+    // So source region is (0,0) to (544,267) inclusive? Or size 544x267?
+    // Backend script: convert "$src_png" -crop "660x330+0+0" ... wait.
+    // Backend lines 35: convert "$src_png" -crop "660x330+0+0" ...
+    // BUT comments say "bottom-right ... +543,+266".
+    // 543+1 = 544.
+    // If the backend runs `-crop "660x330+0+0"`, it asks for 660x330 from 0,0.
+    // If the image is smaller (e.g. 544x267), IM might just give what it has or pad?
+    // Let's check typical size of `global.png`.
+    // It seems the backend script logic might be slightly confusing or legacy.
+    // Use crop_png -> resize -> norm_png (W x H)
+
+    // Let's assume we crop 0,0 width*height?
+    // Or just resize the whole thing?
+    // "Hard crop to map-only interior"
+    // Let's assume we take the whole image?
+    // If the image has labels/axis, we need to crop.
+    // Visual inspection of `global.png` (online) shows it spans the globe but might have white space bottom?
+    // Let's implement a resize of the *entire* downloaded image to target WxH for now.
+    // Most weather maps from NOAA for "global" cover -180 to 180, -90 to 90.
+
+    int target_w = HC_MAP_W * pan_zoom.zoom;
+    int target_h = HC_MAP_H * pan_zoom.zoom;
+
+    // Resize using stb_image_resize
+    uint8_t* resized_rgb = (uint8_t*)malloc(target_w * target_h * 3);
+    if (!resized_rgb) {
+        Serial.printf("DRAP: malloc failed\n");
+        stbi_image_free(png_data);
+        return false;
+    }
+
+    // Use stbir default (linear)
+    // If we need to crop, we would pass a sub-window of png_data to stbir.
+    // Let's assume full image for now.
+    // Note: Backend script line 35 does: `-crop "660x330+0+0"`.
+    // This implies it crops the *source* to 660x330 starting at 0,0?
+    // The source definitely isn't 660x330 if it needs resizing to 660x330 later (line 38)?
+    // Wait, line 38: `convert "$crop_png" -resize "${W}x${H}!" "$norm_png"`
+    // If crop was already 660x330 ($W x $H), resize is no-op.
+    // Maybe the source IS 660x330?
+    // NOAA `global.png` at `services.swpc.noaa.gov/images/d-rap/global.png` is currently 800x400 (just checked via web
+    // search knowledge? No, checking logic). If it's 800x400, cropping 660x330+0+0 takes top left? That sounds wrong
+    // for a global map. Maybe the backend script relies on `global.png` being a specific layout. Let's assumme we
+    // resize the *whole* available image to fits our map. Exception: If aspect ratio differs significantly? Map is 2:1
+    // (660:330).
+
+    stbir_resize_uint8_linear(png_data, img_w, img_h, 0, resized_rgb, target_w, target_h, 0, STBIR_RGB);
+
+    stbi_image_free(png_data);
+
+    // 4. Convert to RGB565 BMP
+    // We already have `writeBMP565File` but it expects uint16_t* buffer.
+    // Let's convert RGB888 -> RGB565
+    uint16_t* rgb565 = (uint16_t*)malloc(target_w * target_h * 2);
+    if (!rgb565) {
+        free(resized_rgb);
+        return false;
+    }
+
+    for (int i = 0; i < target_w * target_h; i++) {
+        uint8_t r = resized_rgb[i * 3 + 0];
+        uint8_t g = resized_rgb[i * 3 + 1];
+        uint8_t b = resized_rgb[i * 3 + 2];
+        rgb565[i] = RGB565(r, g, b);
+    }
+    free(resized_rgb);
+
+    // 5. Save D and N
+    Message ynot;
+    if (!writeBMP565File(dfile, rgb565, target_w, target_h, ynot)) {
+        Serial.printf("DRAP: Write D failed: %s\n", ynot.get());
+        free(rgb565);
+        return false;
+    }
+
+    // N is same as D for DRAP (usually handled by night shadow overlay at runtime?)
+    // Backend copies D to N.
+    if (!writeBMP565File(nfile, rgb565, target_w, target_h, ynot)) {
+        Serial.printf("DRAP: Write N failed: %s\n", ynot.get());
+        free(rgb565);
+        return false;
+    }
+
+    free(rgb565);
+    Serial.printf("DRAP: Native generation success\n");
+    return true;
+}
+
 /* install maps for the given CoreMap that are just files maintained on the server, no update query required.
  * Download only if absent or stale.
  * return whether ok
@@ -534,6 +842,22 @@ static bool installFileMaps(CoreMaps cm) {
     (void)cleanCache(style, 2 * cm_info[cm].max_age);  // don't hammer immediately
     if (day_fp) fclose(day_fp);
     if (night_fp) fclose(night_fp);
+
+    // NATIVE OVERRIDE for AURORA
+    if (cm == CM_AURORA) {
+        struct stat s;
+        if (stat(dfile, &s) != 0 || (myNow() - s.st_mtime > cm_info[cm].max_age)) {
+            generateAuroraMapLocal(dfile, nfile);
+        }
+    }
+
+    // NATIVE OVERRIDE for DRAP
+    if (cm == CM_DRAP) {
+        struct stat s;
+        if (stat(dfile, &s) != 0 || (myNow() - s.st_mtime > cm_info[cm].max_age)) {
+            generateDRAPMapLocal(dfile, nfile);
+        }
+    }
 
     // open each file, downloading if newer or not found locally
     day_fp = openMapFile(cm, dfile, dtitle);

@@ -400,13 +400,17 @@ bool checkPlotTouch(TouchType tt, const SCoord& s, PlotPane pp) {
             break;
         case PLOT_CH_SSN:
             if (!in_top) {
-                plotServerFile("/ssn/ssn-history.txt", "SIDC Sunspot History", "Year");
+                // switch to local update and plot
+                // plotServerFile("/ssn/ssn-history.txt", "SIDC Sunspot History", "Year");
+                plotLocalFile(retrieveSSNHistoryFile(), "SIDC Sunspot History", "Year");
                 return (true);
             }
             break;
         case PLOT_CH_FLUX:
             if (!in_top) {
-                plotServerFile("/solar-flux/solarflux-history.txt", "10.7 cm Solar Flux History", "Year");
+                // switch to local update and plot
+                // plotServerFile("/solar-flux/solarflux-history.txt", "10.7 cm Solar Flux History", "Year");
+                plotLocalFile(retrieveSolarFluxHistoryFile(), "10.7 cm Solar Flux History", "Year");
                 return (true);
             }
             break;

@@ -486,6 +486,277 @@ bool retrieveSolarFlux(SolarFluxData& sf) {
     return (ok);
 }
 
+/* Update the local solarflux-history.txt cache with new monthly averages.
+ * If cache is missing, seed it from the backend server first.
+ * Then check spaceweather.gc.ca for new data.
+ */
+static bool updateSolarFluxHistory(void) {
+    const char* cache_fn = "solarflux-history.txt";
+    static time_t last_check = 0;
+
+    // only check once a day
+    if (myNow() - last_check < 86400) return true;
+    last_check = myNow();
+
+    // 1. Seed if missing
+    FILE* fp = fopenOurs(cache_fn, "r");
+    if (!fp) {
+        // Try to copy from local static data file
+        const char* bundles[] = {"data", "/usr/local/share/hamclock"};
+        for (auto* b : bundles) {
+            char static_seed[1024];
+            snprintf(static_seed, sizeof(static_seed), "%s/%s", b, cache_fn);
+            FILE* seed = fopen(static_seed, "r");
+            if (seed) {
+                Serial.printf("SFHist: Seeding cache from %s...\n", static_seed);
+                fp = fopenOurs(cache_fn, "w");
+                if (fp) {
+                    char buf[1024];
+                    size_t n;
+                    while ((n = fread(buf, 1, sizeof(buf), seed)) > 0) {
+                        fwrite(buf, 1, n, fp);
+                    }
+                    fclose(fp);
+                }
+                fclose(seed);
+                if (fp) break;  // found and copied
+            }
+        }
+
+        // re-open read-only to verify
+        fp = fopenOurs(cache_fn, "r");
+        if (!fp) return false;
+    }
+
+    // 2. Determine last entry date in cache to see if we need update
+    float last_frac_year = 0;
+    char line[100];
+    while (fgets(line, sizeof(line), fp)) {
+        float fy, val;
+        if (sscanf(line, "%f %f", &fy, &val) == 2) last_frac_year = fy;
+    }
+    fclose(fp);
+
+    // Calculate "Last Month" fractional year
+    // year + (month-1)/12.0
+    tmElements_t tm;
+    breakTime(myNow(), tm);
+    // we want previous month
+    int target_m = tm.Month - 1;  // 1-12 becomes 0-11
+    int target_y = tm.Year + 1970;
+    if (target_m < 1) {
+        target_m = 12;
+        target_y--;
+    }
+
+    // target fractional year for the COMPLETED previous month
+    // e.g. if now is Feb 2026, target is Jan 2026.
+    // Frac year = 2026 + (1-1)/12 = 2026.0
+    float target_fy = target_y + (target_m - 1) / 12.0f;
+
+    // simplistic epsilon check: if we have something close to or greater than target, we are good
+    if (last_frac_year > target_fy - 0.001) {
+        return true;
+    }
+
+    // 3. Fetch live data
+    const char* src_url = "https://www.spaceweather.gc.ca/solar_flux_data/daily_flux_values/fluxtable.txt";
+    const char* tmp_fn = "/tmp/flux_update.txt";
+
+    Serial.printf("SFHist: Fetching update from %s\n", src_url);
+    if (!curlDownload(src_url, tmp_fn)) return false;
+
+    fp = fopen(tmp_fn, "r");
+    if (!fp) return false;
+
+    // 4. Parse and Compute Average
+    // Looking for lines starting with Date/Time that match target YYYYMM
+    char target_prefix[10];
+    snprintf(target_prefix, sizeof(target_prefix), "%04d%02d", target_y, target_m);
+
+    float sum_flux = 0;
+    int count = 0;
+
+    while (fgets(line, sizeof(line), fp)) {
+        // Skip headers (alpha chars)
+        if (isalpha(line[0])) continue;
+
+        // Line Fmt: DATE TIME JULIAN CAR_ROT OBS_FLUX ADJ_FLUX ...
+        //           20251201 200000 2461011.385 2291.63 156.4 152.6 ...
+        // We want col 5 (OBS_FLUX) or col 6 (ADJ_FLUX)?
+        // Script uses $5. Let's count cols carefully.
+        // 1:Date 2:Time 3:Julian 4:CarRot 5:ObsFlux 6:AdjFlux
+        // The script uses $5 which is ObsFlux.
+
+        // check prefix
+        if (strncmp(line, target_prefix, 6) == 0) {
+            char* p = line;
+            // skip 4 tokens
+            for (int k = 0; k < 4; k++) {
+                while (*p && !isspace(*p)) p++;
+                while (*p && isspace(*p)) p++;
+            }
+            if (*p) {
+                float flux = atof(p);
+                if (flux > 0) {
+                    sum_flux += flux;
+                    count++;
+                }
+            }
+        }
+    }
+    fclose(fp);
+    unlink(tmp_fn);
+
+    // 5. Append if valid
+    if (count > 0) {
+        float avg = sum_flux / count;
+        fp = fopenOurs(cache_fn, "a");
+        if (fp) {
+            fprintf(fp, "%.2f %.2f\n", target_fy, avg);
+            fclose(fp);
+            Serial.printf("SFHist: Appended %.2f %.2f (n=%d)\n", target_fy, avg, count);
+        }
+    } else {
+        Serial.printf("SFHist: No data found for %s\n", target_prefix);
+    }
+
+    return true;
+}
+
+/* Retrieve the history file cache path, ensuring it is up to date.
+ * Returns absolute path buffer valid until next call.
+ */
+const char* retrieveSolarFluxHistoryFile(void) {
+    updateSolarFluxHistory();
+    // return full path to our local file
+    static char path[1024];
+    snprintf(path, sizeof(path), "%s/solarflux-history.txt", our_dir.c_str());
+    return path;
+}
+
+/* Update the local ssn-history.txt cache with new monthly averages.
+ * If cache is missing, seed it from the backend server first.
+ * Then check sidc.be for new data.
+ */
+static bool updateSSNHistory(void) {
+    const char* cache_fn = "ssn-history.txt";
+    static time_t last_check = 0;
+
+    // only check once a day
+    if (myNow() - last_check < 86400) return true;
+    last_check = myNow();
+
+    // 1. Seed if missing (Robust logic)
+    FILE* fp = fopenOurs(cache_fn, "r");
+    if (!fp) {
+        const char* bundles[] = {"data", "/usr/local/share/hamclock"};
+        for (auto* b : bundles) {
+            char static_seed[1024];
+            snprintf(static_seed, sizeof(static_seed), "%s/%s", b, cache_fn);
+            FILE* seed = fopen(static_seed, "r");
+            if (seed) {
+                Serial.printf("SSNHist: Seeding cache from %s...\n", static_seed);
+                fp = fopenOurs(cache_fn, "w");
+                if (fp) {
+                    char buf[1024];
+                    size_t n;
+                    while ((n = fread(buf, 1, sizeof(buf), seed)) > 0) {
+                        fwrite(buf, 1, n, fp);
+                    }
+                    fclose(fp);
+                }
+                fclose(seed);
+                if (fp) break;
+            }
+        }
+
+        // re-open read-only to verify
+        fp = fopenOurs(cache_fn, "r");
+        if (!fp) return false;
+    }
+
+    // 2. Scan for last entry date in cache to see if we need update
+    // Format: YYYY.frac SSN
+    float last_frac_year = 0;
+    char line[100];
+    while (fgets(line, sizeof(line), fp)) {
+        float fy, val;
+        if (sscanf(line, "%f %f", &fy, &val) == 2) last_frac_year = fy;
+    }
+    fclose(fp);
+
+    // 3. Fetch live data
+    // SILSO CSV: year;month;frac;ssn;...
+    const char* src_url = "https://www.sidc.be/silso/DATA/SN_m_tot_V2.0.csv";
+    const char* tmp_fn = "/tmp/ssn_update.csv";
+
+    Serial.printf("SSNHist: Fetching update from %s\n", src_url);
+    if (!curlDownload(src_url, tmp_fn)) return false;
+
+    fp = fopen(tmp_fn, "r");
+    if (!fp) return false;
+
+    // 4. Parse and Append
+    // We want to append lines that are NEWER than last_frac_year.
+    // Ideally we append in order. The CSV is ordered.
+
+    int added = 0;
+    FILE* fout = NULL;  // open only if needed
+
+    while (fgets(line, sizeof(line), fp)) {
+        // year;month;frac;ssn;...
+        // 1818;01;1818.042;...
+        int y, m;
+        float frac, ssn;
+        // sscanf might be tricky with ; using standard format string.
+        // Use manual tokenizing or replace ; with space first?
+        // Let's replace ; with space
+        for (char* p = line; *p; p++)
+            if (*p == ';') *p = ' ';
+
+        // now parse
+        // year month decimal ssn ...
+        // 1749 1 1749.042 96.7 ...
+        if (sscanf(line, "%d %d %f %f", &y, &m, &frac, &ssn) == 4) {
+            // Filter: 1,3,5,7,9,11
+            if (m % 2 != 1) continue;
+
+            // Recompute our fractional year: Year + (Month-1)/12.0
+            float my_frac = y + (m - 1) / 12.0f;
+
+            if (my_frac > last_frac_year + 0.001) {
+                // New!
+                if (!fout) fout = fopenOurs(cache_fn, "a");
+                if (fout) {
+                    fprintf(fout, "%.2f %.1f\n", my_frac, ssn);
+                    added++;
+                    last_frac_year = my_frac;  // advance
+                }
+            }
+        }
+    }
+
+    fclose(fp);
+    if (fout) fclose(fout);
+    unlink(tmp_fn);
+
+    if (added) Serial.printf("SSNHist: Appended %d new points\n", added);
+
+    return true;
+}
+
+/* Retrieve the history file cache path, ensuring it is up to date.
+ * Returns absolute path buffer valid until next call.
+ */
+const char* retrieveSSNHistoryFile(void) {
+    updateSSNHistory();
+    // return full path to our local file
+    static char path[1024];
+    snprintf(path, sizeof(path), "%s/ssn-history.txt", our_dir.c_str());
+    return path;
+}
+
 /* return whether fresh SPCWX_FLUX data are ready, even if bad.
  */
 static bool checkForNewSolarFlux(void) {

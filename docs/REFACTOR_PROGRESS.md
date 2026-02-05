@@ -49,7 +49,8 @@ The following items still rely on the proxy. They are prioritized for the next s
 
 | **On The Air** | `/ONTA/onta.txt` | **Medium**. Requires finding original source API (likely partial aggregation). | Pending |
 | **Band Conditions** | `/fetchBandConditions.pl` | **Very Hard**. Part of VOACAP ecosystem. | Phase 3 |
-| **DX Peditions** | `/dxpeds/dxpeditions.txt` | **Easy/Medium**. Needs source identification (NG3K? ClubLog?). | Pending |
+| **DX Peditions** | `/dxpeds/dxpeditions.txt` | **Direct Fetch** of NG3K (HTML) + Local Parse | ✅ Complete |
+| **SDO Images** | `/sdo_*.bmp` | **Direct Fetch** of NASA SDO (HTTPS) + Local Resize | ✅ Complete |
 
 
 ## 4. Verification Steps
@@ -63,6 +64,10 @@ The following items still rely on the proxy. They are prioritized for the next s
     *   Verify Solar Wind, Bz, and X-Ray graphs are plotting history.
 5.  **Check Contests**:
     *   Open Contest pane, verify list is populated from WA7BNM.
+6.  **Check SDO**:
+    *   Open SDO pane, verify images are downloaded and displayed correctly.
+7.  **Check DX Peditions**:
+    *   Open DX Cluster pane / view, verify upcoming DXpeditions list.
 
 ## 5. Technical Implementation Notes (Critical for Future Devs)
 *   **JSON Parsing:**
@@ -75,8 +80,16 @@ The following items still rely on the proxy. They are prioritized for the next s
 *   **Network:**
     *   **Libcurl**: We replaced `system("wget...")` with a native `curlDownload` wrapper (in `src/hal/linux/System.cpp`) linking against `libcurl`. This provides robust HTTPS, timeout control, and error logging. Do not revert to `WiFiClientSecure` for these external fetches without verifying TLS compatibility.
     *   **URL Encoding**: WSPR queries require strict URL encoding (e.g., `%20` for spaces, `%27` for quotes). We added `urlencode.h` to handle this robustly, replacing manual loops.
+*   **SDO Images:**
+    *   **BMP Writing:** The `writeBMP565File` function uses `fopenOurs` which always prepends `our_dir`. Therefore, use relative filenames when calling it, to avoid `path/to/path/to/file` errors.
+*   **DX Peditions:**
+    *   **Parsed**: We download the raw NG3K HTML page and perform a lightweight parse in `dxpeds.cpp` to extract upcoming expeditions, mimicking the Perl script logic on the client.
+    *   **Storage**: Cached in `dxpeditions.txt` in the user data directory.
+*   **World Weather Grid:**
+    *   **Native Generation**: The logic to generate the global weather grid (`wx.txt`) has been ported to C++ in `wx.cpp`. It fetches current data for a grid of points from **Open-Meteo**, replacing the need for a backend script or the prototype `gen_wx_grid.py`.
 
 ## 6. Next Steps
-*   Tackle **DRAP** and **Map Overlays** (Phase 2).
-*   Investigate local `voacapl` integration (Phase 2).
+*   **Phase 2**: Tackle **VOACAP** replacement (likely requires local computation or new API).
+*   **Phase 2**: Address **Static Map Assets** and **Weather Map** backgrounds.
+*   **Phase 3**: Finalize **Updates / Diags** which inherently rely on a central server.
 *   **Push master branch to GitHub.**

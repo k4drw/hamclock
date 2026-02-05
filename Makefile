@@ -13,7 +13,7 @@
 .PHONY: clean clobber help hclibs
 
 # build flags common to all options and architectures
-CXXFLAGS = -Isrc/hal/linux -IArduinoLib -IwsServer/include -Izlib-hc -I. -g -O2 -Wall -pthread -std=c++17
+CXXFLAGS = -Isrc/hal/linux -IArduinoLib -IwsServer/include -Izlib-hc -Isrc/stb -I. -g -O2 -Wall -pthread -std=c++17
 # CXXFLAGS += -Wextra -pedantic -Werror -Wno-attributes -Wno-unknown-pragmas
 
 # add explicit framebuffer depth as _FB_DEPTH if defined
@@ -163,7 +163,8 @@ src/hal/linux/WiFiServer.o \
 	wifi.o \
 	wifimeter.o \
 	wx.o \
-	zones.o
+	zones.o \
+	src/stb/stb_impl.o
 
 help:
 	@printf "\nThe following targets are available (as appropriate for your system)\n\n"
@@ -304,7 +305,11 @@ install:
 	    && chmod u+s $$TARGET \
 	    && mkdir -p /usr/local/share/hamclock \
 	    && cp -f data/cities2.txt /usr/local/share/hamclock/ \
-	    && chmod 644 /usr/local/share/hamclock/cities2.txt; \
+	    && chmod 644 /usr/local/share/hamclock/cities2.txt \
+	    && cp -f data/solarflux-history.txt /usr/local/share/hamclock/ \
+	    && chmod 644 /usr/local/share/hamclock/solarflux-history.txt \
+	    && cp -f data/ssn-history.txt /usr/local/share/hamclock/ \
+	    && chmod 644 /usr/local/share/hamclock/ssn-history.txt; \
 	fi
 
 clean clobber:
@@ -316,4 +321,7 @@ clean clobber:
 	rm -rf *.o src/hal/linux/*.o *.dSYM hamclock hamclock-*[0-9]x[0-9]* hamclock-fb* hamclock-web*
 
 src/hal/linux/%.o: src/hal/linux/%.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+src/stb/%.o: src/stb/%.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<

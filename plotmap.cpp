@@ -128,9 +128,9 @@ void plotMapData(const char title[], const char x_label[], float x_data[], float
     initEarthMap();
 }
 
-/* read and plot the given server file.
+/* read and plot the given local file.
  */
-void plotServerFile(const char* filename, const char* title, const char x_label[]) {
+void plotLocalFile(const char* filename, const char* title, const char x_label[]) {
     // base of filename
     const char* file_slash = strrchr(filename, '/');
     const char* file_base = file_slash ? file_slash + 1 : filename;
@@ -139,31 +139,20 @@ void plotServerFile(const char* filename, const char* title, const char x_label[
     float* x_data = NULL;
     float* y_data = NULL;
     int n_data = 0;
-    WiFiClient map_client;
     bool ok = false;
 
-    Serial.println(filename);
-    if (map_client.connect(backend_host, backend_port)) {
+    FILE* fp = fopen(filename, "r");
+    if (fp) {
         updateClocks(false);
-
-        // query web page
-        httpHCGET(map_client, backend_host, filename);
-
-        // skip response header
-        if (!httpSkipHeader(map_client)) {
-            mapMsg(2000, "%s: Header is short", file_base);
-            goto out;
-        }
 
         // read lines, adding to x_data[] and y_data[]
         char line[100];
-        while (getTCPLine(map_client, line, sizeof(line), NULL)) {
+        while (fgets(line, sizeof(line), fp)) {
             // crack
             float x, y;
             if (sscanf(line, "%f %f", &x, &y) != 2) {
-                Serial.printf("PMAP: bad line: %s\n", line);
-                mapMsg(2000, "%s: Data is corrupted", file_base);
-                goto out;
+                // skip bad lines (headers etc)
+                continue;
             }
 
             // grow
@@ -182,7 +171,7 @@ void plotServerFile(const char* filename, const char* title, const char x_label[
             n_data += 1;
         }
 
-        Serial.printf("PMAP: read %d points\n", n_data);
+        Serial.printf("PMAP: read %d points from %s\n", n_data, filename);
 
         // require at least a few points
         if (n_data < 10) {
@@ -192,6 +181,8 @@ void plotServerFile(const char* filename, const char* title, const char x_label[
 
         // ok!
         ok = true;
+    } else {
+        mapMsg(2000, "%s: Not found", file_base);
     }
 
 out:
@@ -201,5 +192,5 @@ out:
     // clean up, any error is already reported
     free(x_data);
     free(y_data);
-    map_client.stop();
+    if (fp) fclose(fp);
 }

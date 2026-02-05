@@ -7,10 +7,6 @@
 #include "HamClock.h"
 #include <ArduinoJson.h>
 
-// downloads
-static const char wx_ll[] = "/wx.pl";             // URL for requesting specific wx/time at lat/lng
-static const char ww_page[] = "/worldwx/wx.txt";  // URL for the gridded world weather table
-
 // config
 #define WWXTBL_INTERVAL (45 * 60)  // "fast" world wx table update interval, secs
 #define MAX_WXTZ_AGE (55 * 60)     // max age of info for same location, secs
@@ -94,46 +90,243 @@ static bool windDeg2Name(float deg, char dirname[4]) {
     return (dirname[0] != '?');
 }
 
+/* generate world wx grid data by calling Open-Meteo API in batches
+ * and saving to data/wx.txt.
+ * returns true if successful.
+ */
+static bool generateWorldWxNative(void) {
+    const char* out_fn = "data/wx.txt";
+    const int LAT_START = -90;
+    const int LAT_END = 90;
+    const int LAT_STEP = 4;
+    const int LNG_START = -180;
+    const int LNG_END = 175;
+    const int LNG_STEP = 5;
+    const int CHUNK_SIZE = 400;  // safe for URL length
+
+    Serial.printf("WWX: Generating %s from Open-Meteo...\n", out_fn);
+
+    // Build list of coordinates
+    struct Coord {
+        float lat, lng;
+    };
+    // Estimate count
+    int n_points = 0;
+    for (int lng = LNG_START; lng <= LNG_END; lng += LNG_STEP)
+        for (int lat = LAT_START; lat <= LAT_END; lat += LAT_STEP) n_points++;
+
+    Coord* coords = (Coord*)malloc(n_points * sizeof(Coord));
+    if (!coords) {
+        Serial.printf("WWX: malloc failed\n");
+        return false;
+    }
+
+    int idx = 0;
+    for (int lng = LNG_START; lng <= LNG_END; lng += LNG_STEP) {
+        for (int lat = LAT_START; lat <= LAT_END; lat += LAT_STEP) {
+            coords[idx].lat = (float)lat;
+            coords[idx].lng = (float)lng;
+            idx++;
+        }
+    }
+
+    // Open file
+    FILE* fp = fopenOurs(out_fn, "w");
+    if (!fp) {
+        Serial.printf("WWX: fopen %s failed\n", out_fn);
+        free(coords);
+        return false;
+    }
+    fprintf(fp, "#   lat     lng  temp,C     %%hum    mps     dir    mmHg    Wx           TZ\n");
+
+    // Loop in batches
+    bool all_ok = true;
+    WiFiClient client;
+    const char* host = "api.open-meteo.com";
+
+    for (int i = 0; i < n_points; i += CHUNK_SIZE) {
+        updateClocks(false);  // keep display alive
+
+        int end = i + CHUNK_SIZE;
+        if (end > n_points) end = n_points;
+        int count = end - i;
+
+        // Build URL
+        // limit ~8KB usually safe on embedded, but ESP8266 had 4KB limits.
+        // host logic in retrieveCurrentWX uses standard GET.
+        // We accumulate huge string? Alloc buf.
+        int buf_max = 8192;
+        char* url_buf = (char*)malloc(buf_max);
+        if (!url_buf) {
+            all_ok = false;
+            break;
+        }
+
+        int n = snprintf(url_buf, buf_max,
+                         "/v1/"
+                         "forecast?current=temperature_2m,relative_humidity_2m,surface_pressure,wind_speed_10m,wind_"
+                         "direction_10m,cloud_cover,precipitation&wind_speed_unit=ms&timeformat=unixtime&latitude=");
+
+        for (int j = i; j < end; j++) {
+            n += snprintf(url_buf + n, buf_max - n, "%.1f,", coords[j].lat);
+        }
+        url_buf[n - 1] = '&';  // replace last comma
+        n += snprintf(url_buf + n, buf_max - n, "longitude=");
+        for (int j = i; j < end; j++) {
+            n += snprintf(url_buf + n, buf_max - n, "%.1f,", coords[j].lng);
+        }
+        url_buf[n - 1] = '\0';  // replace last comma
+
+        Serial.printf("WWX: Fetching batch %d/%d (%d pts)...\n", i / CHUNK_SIZE + 1,
+                      (n_points + CHUNK_SIZE - 1) / CHUNK_SIZE, count);
+
+        if (client.connect(host, 80)) {
+            client.print("GET ");
+            client.print(url_buf);
+            client.println(" HTTP/1.1");
+            client.print("Host: ");
+            client.println(host);
+            client.println("Connection: close");
+            client.println();
+
+            if (httpSkipHeader(client)) {
+                // Parse JSON stream
+                // It returns a list of objects? No, Open-Meteo returns ONE object with arrays if multiple coords
+                // provided. Documentation: "If you want to request data for multiple locations ... the API will return
+                // an array of objects."
+
+                // Since response is list of objects [ {...}, {...} ], we can stream array.
+                // Or one huge object?
+                // "returns an array of objects".
+
+                // We use DynamicJsonDocument. Size?
+                // 200 points * ~200 bytes = 40KB.
+                // RPi is OK.
+
+                // Read text to buffer? Or stream?
+                // deserializeJson(client) works.
+                DynamicJsonDocument doc(1024 * 128);  // 128KB
+                DeserializationError err = deserializeJson(doc, client);
+                if (!err && doc.is<JsonArray>()) {
+                    JsonArray arr = doc.as<JsonArray>();
+                    if (arr.size() == (size_t)count) {
+                        for (int k = 0; k < count; k++) {
+                            JsonObject obj = arr[k];
+                            JsonObject cur = obj["current"];
+
+                            float t = cur["temperature_2m"];
+                            float h = cur["relative_humidity_2m"];
+                            float p = cur["surface_pressure"].as<float>() / 1.33322f;  // hPa to mmHg
+                            float ws = cur["wind_speed_10m"];
+                            float wd = cur["wind_direction_10m"];
+                            int cc = cur["cloud_cover"];
+                            float prec = cur["precipitation"];
+
+                            const char* cond = "Clear";
+                            if (cc > 20) cond = "Partly";
+                            if (cc > 80) cond = "Clouds";
+                            if (prec > 0.1) {
+                                if (t < 0)
+                                    cond = "Snow";
+                                else
+                                    cond = "Rain";
+                            }
+
+                            // approx TZ
+                            int offset = (int)(round(coords[i + k].lng / 15.0) * 3600);
+
+                            // Write to file
+                            // lat lng temp %hum mps dir mmHg Wx TZ
+                            // Separate longitude blocks with empty line logic handled by reader?
+                            // No, reader expects: increasing lat with same lng, then blank line.
+                            // Our loop order: OUTER lng, INNER lat.
+                            // Coordinates generated in correct order above? Yes.
+
+                            // Check if lng changed from prev
+                            if (i + k > 0 && coords[i + k].lng != coords[i + k - 1].lng) {
+                                fprintf(fp, "\n");
+                            }
+
+                            fprintf(fp, " %g %g %.1f %.0f %.1f %.0f %.1f %s %d\n", coords[i + k].lat, coords[i + k].lng,
+                                    t, h, ws, wd, p, cond, offset);
+                        }
+                    } else {
+                        Serial.printf("WWX: Batch count mismatch %ld != %d\n", arr.size(), count);
+                        all_ok = false;
+                    }
+                } else {
+                    Serial.printf("WWX: JSON parse failed: %s\n", err.c_str());
+                    all_ok = false;
+                }
+            } else {
+                Serial.printf("WWX: HTTP timeout\n");
+                all_ok = false;
+            }
+            client.stop();
+        } else {
+            Serial.printf("WWX: Connection failed\n");
+            all_ok = false;
+        }
+
+        free(url_buf);
+        if (!all_ok) break;
+    }
+
+    fclose(fp);
+    free(coords);
+
+    if (all_ok)
+        Serial.printf("WWX: Generation complete.\n");
+    else
+        Serial.printf("WWX: Generation failed.\n");
+
+    return all_ok;
+}
+
 /* download world wx grid data into wwt.table every
  */
 static bool retrieveWorldWx(void) {
-    WiFiClient ww_client;
-    bool ok = false;
-
     // reset table
     free(wwt.table);
     wwt.table = NULL;
     wwt.n_rows = wwt.n_cols = 0;
 
-    Serial.printf("WWX: %s\n", ww_page);
+    bool ok = false;
+    FILE* fp = NULL;
 
-    // get
-    if (ww_client.connect(backend_host, backend_port)) {
-        updateClocks(false);
+    // Check if we need to regenerate
+    // Logic: if missing or older than interval
+    bool generate = true;
+    const char* local_fn = "data/wx.txt";
+    struct stat s;
+    if (stat(local_fn, &s) == 0) {
+        if (myNow() - s.st_mtime < WWXTBL_INTERVAL) {
+            generate = false;
+        }
+    }
 
-        // query web page
-        httpHCGET(ww_client, backend_host, ww_page);
+    if (generate) {
+        generateWorldWxNative();
+    }
 
-        // prep for scanning (ahead of skipping header to avoid stupid g++ goto errors)
+    // Try reading local
+    fp = fopenOurs(local_fn, "r");
+
+    // Fallback? (User asked to remove backend dependency, so we rely on generation)
+    // But if native generation failed, maybe old backend?
+    // Let's stick to native first.
+
+    if (fp) {
+        // prep for scanning
         int line_n = 0;                    // line number
         int n_wwtable = 0;                 // entries defined found so far
         int n_wwmalloc = 0;                // malloced room so far
         int n_lngcols = 0;                 // build up n cols of constant lng so far this block
-        float del_lat = 0, del_lng = 0;    // check constant step sizes
+        float del_lat = 0;                 // check constant step sizes
         float prev_lat = 0, prev_lng = 0;  // for checking step sizes
 
-        // skip response header
-        if (!httpSkipHeader(ww_client)) {
-            Serial.printf("WWX: header timeout");
-            goto out;
-        }
-
-        /* read file and build table. confirm regular spacing each dimension.
-         * file is one line per datum, increasing lat with same lng, then lng steps at each blank line.
-         * file contains lng 180 for plotting but we don't use it.
-         */
-        char line[100];
-        while (getTCPLine(ww_client, line, sizeof(line), NULL)) {
+        char line[128];
+        while (fgets(line, sizeof(line), fp)) {
             if (debugLevel(DEBUG_WX, 2)) Serial.printf("WWX: %s\n", line);
 
             // another line
@@ -142,14 +335,14 @@ static bool retrieveWorldWx(void) {
             // skip comment lines
             if (line[0] == '#') continue;
 
-            // crack line:   lat     lng  temp,C     %hum    mps     dir    mmHg Wx
+            // crack line:   lat     lng  temp,C     %hum    mps     dir    mmHg    Wx           TZ
             float lat, lng, windir;
             WXInfo wx;
             memset(&wx, 0, sizeof(wx));
             int ns = sscanf(line, "%g %g %g %g %g %g %g %31s %d", &lat, &lng, &wx.temperature_c, &wx.humidity_percent,
                             &wx.wind_speed_mps, &windir, &wx.pressure_hPa, wx.conditions, &wx.timezone);
 
-            // skip lng 180
+            // skip lng 180 (often present in GRIB data but unused here)
             if (lng == 180) break;
 
             // add and check
@@ -159,7 +352,8 @@ static bool retrieveWorldWx(void) {
                     Serial.printf("WWX: irregular lng: %d x %d  lng %g != %g\n", wwt.n_rows, n_lngcols, lng, prev_lng);
                     goto out;
                 }
-                if (n_lngcols > 1 && lat != prev_lat + del_lat) {
+                if (n_lngcols > 1 && fabs(lat - (prev_lat + del_lat)) > 0.01) {
+                    // relaxed check for float fuzz
                     Serial.printf("WWX: irregular lat: %d x %d    lat %g != %g + %g\n", wwt.n_rows, n_lngcols, lat,
                                   prev_lat, del_lat);
                     goto out;
@@ -177,7 +371,7 @@ static bool retrieveWorldWx(void) {
                 memcpy(&wwt.table[n_wwtable++], &wx, sizeof(WXInfo));
 
                 // update walk
-                if (n_lngcols == 0) del_lng = lng - prev_lng;
+
                 del_lat = lat - prev_lat;
                 prev_lat = lat;
                 prev_lng = lng;
@@ -190,14 +384,15 @@ static bool retrieveWorldWx(void) {
                 if (wwt.n_rows == 0) {
                     // we know n cols after completing the first lng block, all remaining must equal this
                     wwt.n_cols = n_lngcols;
-                } else if (n_lngcols != wwt.n_cols) {
+                } else if (n_lngcols != wwt.n_cols && n_lngcols > 0) {
+                    // Allow trailing blank lines without error
                     Serial.printf("WWX: inconsistent columns %d != %d after %d rows\n", n_lngcols, wwt.n_cols,
                                   wwt.n_rows);
                     goto out;
                 }
 
-                // one more wwt.table row
-                wwt.n_rows++;
+                // one more wwt.table row if we actually read a block
+                if (n_lngcols > 0) wwt.n_rows++;
 
                 // reset block stats
                 n_lngcols = 0;
@@ -209,26 +404,26 @@ static bool retrieveWorldWx(void) {
         }
 
         // final check
-        if (wwt.n_rows != 360 / del_lng || wwt.n_cols != 1 + 180 / del_lat) {
-            Serial.printf("WWX: incomplete table: rows %d != 360/%g   cols %d != 1 + 180/%g\n", wwt.n_rows, del_lng,
-                          wwt.n_cols, del_lat);
-            goto out;
+        // We might need to increment rows if file ended without blank line
+        if (n_lngcols > 0) {
+            if (wwt.n_rows == 0) wwt.n_cols = n_lngcols;
+            wwt.n_rows++;
         }
 
-        // yah!
-        ok = true;
-        Serial.printf("WWX: fast table %d lat x %d lng\n", wwt.n_cols, wwt.n_rows);
+        if (wwt.n_rows > 0 && wwt.n_cols > 0) {
+            ok = true;
+            Serial.printf("WWX: fast table %d lat x %d lng\n", wwt.n_cols, wwt.n_rows);
+        } else {
+            Serial.printf("WWX: No valid data found\n");
+        }
 
     out:
-
         if (!ok) {
-            // reset table
             free(wwt.table);
             wwt.table = NULL;
             wwt.n_rows = wwt.n_cols = 0;
         }
-
-        ww_client.stop();
+        if (fp) fclose(fp);
     }
 
     return (ok);

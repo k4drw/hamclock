@@ -2181,7 +2181,9 @@ extern void prepPlotBox(const SBox& box);
  */
 
 extern void plotMapData(const char title[], const char x_label[], float x_data[], float y_data[], int n_data);
-extern void plotServerFile(const char* filename, const char title[], const char x_label[]);
+extern void plotLocalFile(const char* filename, const char* title, const char x_label[]);
+extern const char* retrieveSolarFluxHistoryFile(void);
+extern const char* retrieveSSNHistoryFile(void);
 
 /*********************************************************************************************
  *

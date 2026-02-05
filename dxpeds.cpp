@@ -2,6 +2,9 @@
  */
 
 #include "HamClock.h"
+#include <sys/stat.h>
+#include <ctype.h>
+#include <unistd.h>
 
 #define DXPEDS_COLOR RGB565(255, 200, 130)  // heading text color
 #define NOW_COLOR RGB565(40, 140, 40)       // background when dxpedition is happening now
@@ -22,8 +25,6 @@
 #define DXCCHECK_DT 15000  // period to check dxcluster if failing, millis
 static SBox clok_b;
 
-// URL and its local cache file name
-static const char dxpeds_page[] = "/dxpeds/dxpeditions.txt";
 static const char dxpeds_fn[] = "dxpeditions.txt";
 
 #define DXPEDS_MAXAGE (3600 * 24)  // update when cache older than this, secs
@@ -520,6 +521,214 @@ static void freeDXPeds(void) {
     }
 }
 
+/* given a standard 3-char abbreviation for month, return 1-12, else 0
+ */
+static int crackMonth(const char* name) {
+    static const char* mons[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    for (int i = 0; i < 12; i++) {
+        if (strcasecmp(name, mons[i]) == 0) return i + 1;
+    }
+    return 0;
+}
+
+/* scan the given string for the first occurrence of `class="target"` and return pointer to
+ * start of content after the closing >.
+ * return NULL if not found.
+ */
+static char* findClassContent(char* html, const char* target) {
+    char clean_target[50];
+    snprintf(clean_target, sizeof(clean_target), "class=\"%s\"", target);
+    char* cls = strstr(html, clean_target);
+    if (!cls) return NULL;
+    char* content = strchr(cls, '>');
+    return content ? content + 1 : NULL;
+}
+
+/* Parse NG3K HTML file and write to cache file in standard HamClock format.
+ */
+static bool updateDXPedsCache(const char* cache_fn) {
+    const char* url = "https://www.ng3k.com/Misc/adxo.html";
+    char tmp_fn[] = "/tmp/ng3k.html";
+
+    // download
+    if (!curlDownload(url, tmp_fn)) return false;
+
+    // open inputs
+    FILE* fin = fopen(tmp_fn, "r");
+    if (!fin) return false;
+
+    // open output
+    FILE* fout = fopenOurs(cache_fn, "w");
+    if (!fout) {
+        fclose(fin);
+        unlink(tmp_fn);
+        return false;
+    }
+
+    // write header
+    fprintf(fout, "1\n");
+    fprintf(fout, "NG3K\n");
+    fprintf(fout, "https://www.ng3k.com/Misc/adxo.html\n");
+
+    // read entire file into memory for easier parsing of multi-line tags
+    fseek(fin, 0, SEEK_END);
+    long fsize = ftell(fin);
+    fseek(fin, 0, SEEK_SET);
+    char* html = (char*)malloc(fsize + 1);
+    if (!html) {
+        fclose(fin);
+        fclose(fout);
+        unlink(tmp_fn);
+        return false;
+    }
+    fread(html, 1, fsize, fin);
+    html[fsize] = 0;
+    fclose(fin);
+    unlink(tmp_fn);
+
+    // scan for rows
+    char* walker = html;
+    time_t now = myNow();
+    int found = 0;
+
+    while ((walker = strstr(walker, "class=\"adxoitem\"")) != NULL) {
+        // found a row, find columns
+        // <td>DATE</td> <td>DATE</td> <td class="cty">LOC</td> ... <td class="call">CALL</td>
+
+        // Date 1 (Start)
+        char* d1_p = findClassContent(walker, "date");
+        if (!d1_p) {
+            walker++;
+            continue;
+        }
+
+        // Date 2 (End)
+        char* d2_p = findClassContent(d1_p, "date");
+        if (!d2_p) {
+            walker++;
+            continue;
+        }
+
+        // Location
+        char* loc_p = findClassContent(d2_p, "cty");
+        if (!loc_p) {
+            walker++;
+            continue;
+        }
+
+        // Callsign (might be further down)
+        char* call_p = findClassContent(loc_p, "call");
+        if (!call_p) {
+            walker++;
+            continue;
+        }
+
+        // Parse fields
+        // Dates are roughly "YYYY MMMDD" or similar inside the td
+        // Extract plain text up to <
+        int y1, d1, y2, d2;
+        char m1[4], m2[4];
+        if (sscanf(d1_p, " %d %3s%d", &y1, m1, &d1) != 3) {
+            walker++;
+            continue;
+        }
+        if (sscanf(d2_p, " %d %3s%d", &y2, m2, &d2) != 3) {
+            walker++;
+            continue;
+        }
+
+        // convert to unix time
+        tmElements_t tm;
+        tm.Hour = tm.Minute = tm.Second = 0;
+        tm.Year = y1 - 1970;
+        tm.Month = crackMonth(m1);
+        tm.Day = d1;
+        time_t t_start = makeTime(tm);
+
+        tm.Year = y2 - 1970;
+        tm.Month = crackMonth(m2);
+        tm.Day = d2;
+        tm.Hour = 23;
+        tm.Minute = 59;
+        tm.Second = 59;
+        time_t t_end = makeTime(tm);
+
+        // fix year rollover if end < start
+        if (t_end < t_start) {
+            tm.Year++;  // try next year for end
+            t_end = makeTime(tm);
+        }
+
+        // skip if old
+        if (t_end < now - 86400) {
+            walker = call_p;
+            continue;
+        }
+
+        // extract location: up to <
+        char* loc_end = strchr(loc_p, '<');
+        if (!loc_end) {
+            walker++;
+            continue;
+        }
+        char loc[100];
+        int loc_len = loc_end - loc_p;
+        if (loc_len >= (int)sizeof(loc)) loc_len = sizeof(loc) - 1;
+        strncpy(loc, loc_p, loc_len);
+        loc[loc_len] = 0;
+
+        // cleanup HTML entities in loc (basic ones)
+        char* amp;
+        while ((amp = strstr(loc, "&nbsp;")) != NULL) *amp = ' ';
+        while ((amp = strstr(loc, "&amp;")) != NULL) {
+            *amp = '&';
+            memmove(amp + 1, amp + 5, strlen(amp + 5) + 1);
+        }
+
+        // extract callsign: might be inside <a ...>
+        // check if call_p starts with <a
+        char call[50];
+        char* call_start = call_p;
+        while (*call_start && isspace(*call_start)) call_start++;
+        if (strncmp(call_start, "<a", 2) == 0) {
+            // inside link
+            call_start = strchr(call_start, '>');
+            if (call_start) call_start++;
+        }
+        if (!call_start) {
+            walker++;
+            continue;
+        }
+
+        char* call_end = strchr(call_start, '<');
+        if (!call_end) {
+            walker++;
+            continue;
+        }
+        int call_len = call_end - call_start;
+        if (call_len >= (int)sizeof(call)) call_len = sizeof(call) - 1;
+        strncpy(call, call_start, call_len);
+        call[call_len] = 0;
+
+        // one last cleanup of call (sometimes has spaces or /)
+        // just trim spaces
+        while (strlen(call) > 0 && isspace(call[strlen(call) - 1])) call[strlen(call) - 1] = 0;
+
+        // write csv: start,end,loc,call,url(empty)
+        fprintf(fout, "%ld,%ld,%s,%s,\n", (long)t_start, (long)t_end, loc, call);
+        found++;
+
+        // advance
+        walker = call_end;
+    }
+
+    free(html);
+    fclose(fout);
+
+    Serial.printf("DXP: updated cache with %d items\n", found);
+    return true;
+}
+
 /* first line is number of credits, followed by one line for name and for url.
  * return whether io ok.
  * N.B. we assume credits[] has already been free()d
@@ -581,7 +790,22 @@ static bool retrieveDXPeds(const SBox& box) {
     freeDXPeds();
 
     // download and load dxpeds[]
-    FILE* fp = openCachedFile(dxpeds_fn, dxpeds_page, DXPEDS_MAXAGE, DXPEDS_MINSIZ);
+    // check cache stats
+    // check cache stats
+    struct stat sbuf;
+    char full_fn[200];
+    snprintf(full_fn, sizeof(full_fn), "%s/%s", our_dir.c_str(), dxpeds_fn);
+    bool cache_ok =
+        stat(full_fn, &sbuf) == 0 && sbuf.st_size > DXPEDS_MINSIZ && (myNow() - sbuf.st_mtime) < DXPEDS_MAXAGE;
+
+    // update if stale
+    if (!cache_ok) {
+        if (!updateDXPedsCache(dxpeds_fn)) {
+            Serial.printf("DXP: update failed, using old cache if available\n");
+        }
+    }
+
+    FILE* fp = fopenOurs(dxpeds_fn, "r");
 
     if (fp) {
         // look alive
